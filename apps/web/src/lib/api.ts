@@ -1,6 +1,7 @@
 import type {
   CoachRecommendation,
   CoachRequest,
+  PracticeMode,
   PracticeAttempt,
   TopicMastery
 } from "@interview-architect/domain";
@@ -117,10 +118,14 @@ export const api = {
     return request<{ deleted: true }>("/me", { method: "DELETE" });
   },
 
-  startAttempt(questionId: string, questionVersion: number): Promise<{ attempt: PracticeAttempt }> {
+  startAttempt(
+    questionId: string,
+    questionVersion: number,
+    mode: PracticeMode = "learn"
+  ): Promise<{ attempt: PracticeAttempt }> {
     return request<{ attempt: PracticeAttempt }>("/attempts", {
       method: "POST",
-      body: JSON.stringify({ questionId, questionVersion })
+      body: JSON.stringify({ questionId, questionVersion, mode })
     });
   },
 
@@ -131,10 +136,15 @@ export const api = {
       durationSeconds?: number;
       selfScore?: number;
       rubricScores?: Record<string, number>;
-    }
+    },
+    idempotencyKey?: string
   ): Promise<{ attempt: PracticeAttempt; mastery?: TopicMastery }> {
     return request<{ attempt: PracticeAttempt; mastery?: TopicMastery }>(`/attempts/${encodeURIComponent(attemptId)}`, {
       method: "PATCH",
+      headers:
+        input.status === "completed"
+          ? { "Idempotency-Key": idempotencyKey ?? crypto.randomUUID() }
+          : undefined,
       body: JSON.stringify(input)
     });
   },

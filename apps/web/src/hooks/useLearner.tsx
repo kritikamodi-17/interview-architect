@@ -8,7 +8,7 @@ import {
   useState,
   type PropsWithChildren
 } from "react";
-import type { PracticeAttempt, TopicMastery } from "@interview-architect/domain";
+import type { PracticeAttempt, PracticeMode, TopicMastery } from "@interview-architect/domain";
 import { api, isTransportError, type ProgressPayload } from "../lib/api";
 
 export type SyncStatus = "checking" | "online" | "offline" | "error";
@@ -27,7 +27,11 @@ export interface EraseStudyDataResult {
 interface LearnerContextValue extends LearnerSnapshot {
   syncStatus: SyncStatus;
   syncMessage?: string;
-  startAttempt: (questionId: string, questionVersion: number) => Promise<PracticeAttempt>;
+  startAttempt: (
+    questionId: string,
+    questionVersion: number,
+    mode?: PracticeMode
+  ) => Promise<PracticeAttempt>;
   completeAttempt: (
     attempt: PracticeAttempt,
     input: {
@@ -96,6 +100,18 @@ function idForLocalAttempt(): string {
     return `local-${crypto.randomUUID()}`;
   }
   return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function newCompletionOperationKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  const suffix = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
+    .replace(/[^a-f0-9]/g, "")
+    .padEnd(12, "0")
+    .slice(0, 12);
+  return `00000000-0000-4000-8000-${suffix}`;
 }
 
 function activeAttemptFor(questionId: string, attempts: PracticeAttempt[]): PracticeAttempt | undefined {
@@ -209,7 +225,11 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
   }, [refreshProgress]);
 
   const startAttempt = useCallback(
-    (questionId: string, questionVersion: number): Promise<PracticeAttempt> => {
+    (
+      questionId: string,
+      questionVersion: number,
+      mode: PracticeMode = "learn"
+    ): Promise<PracticeAttempt> => {
       const existing = activeAttemptFor(questionId, snapshotRef.current.attempts);
       if (existing) return Promise.resolve(existing);
 
@@ -221,6 +241,7 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
         userId: "local-learner",
         questionId,
         questionVersion,
+        mode,
         status: "in_progress",
         startedAt: new Date().toISOString()
       };
@@ -229,7 +250,7 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
       updateSnapshot((current) => ({ ...current, attempts: [provisional, ...current.attempts] }));
 
       const request = api
-        .startAttempt(questionId, questionVersion)
+        .startAttempt(questionId, questionVersion, mode)
         .then((response) => {
           updateSnapshot((current) => ({
             ...current,
@@ -287,10 +308,11 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
       if (attempt.id.startsWith("local-")) return optimistic;
 
       try {
+        const operationKey = newCompletionOperationKey();
         const response = await api.completeAttempt(attempt.id, {
           status: "completed",
           ...input
-        });
+        }, operationKey);
         updateSnapshot((current) => ({
           ...current,
           attempts: current.attempts.map((item) => (item.id === attempt.id ? response.attempt : item)),

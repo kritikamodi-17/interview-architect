@@ -1,6 +1,7 @@
 import type {
   AttemptStatus,
   InterviewQuestion,
+  PracticeMode,
   PracticeAttempt,
   TopicMastery
 } from "@interview-architect/domain";
@@ -40,6 +41,7 @@ export interface CreateAttemptInput {
   userId: string;
   questionId: string;
   questionVersion: number;
+  mode: PracticeMode;
   startedAt: string;
 }
 
@@ -59,6 +61,34 @@ export interface UpdateAttemptInput {
   selfScore?: number;
   rubricScores?: Record<string, number>;
 }
+
+/** The stable response returned for a completed-attempt mutation. */
+export interface AttemptCompletionResponse {
+  attempt: PracticeAttempt;
+  mastery?: TopicMastery;
+}
+
+/**
+ * A completion is keyed by a client-generated operation ID. The request hash
+ * binds that key to the exact normalized payload so a changed retry is safe to
+ * reject instead of silently accepting a different review.
+ */
+export interface CompleteAttemptWithReceiptInput {
+  userId: string;
+  attemptId: string;
+  update: UpdateAttemptInput & { status: "completed"; selfScore: number };
+  operationKey: string;
+  requestHash: string;
+  response?: AttemptCompletionResponse;
+  receiptCreatedAt: string;
+  receiptExpiresAt: string;
+}
+
+export type CompleteAttemptWithReceiptResult =
+  | { outcome: "completed"; response: AttemptCompletionResponse }
+  | { outcome: "replayed"; response: AttemptCompletionResponse }
+  | { outcome: "idempotency_key_reused" }
+  | { outcome: "attempt_already_finished" };
 
 export interface ReviewQueueItem {
   question: InterviewQuestion;

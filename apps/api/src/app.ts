@@ -5,6 +5,7 @@ import {
   type CoachRequest,
   type InterviewQuestion,
   type LearnerProgress,
+  type PracticeAttempt,
   type TopicMastery
 } from "@interview-architect/domain";
 import { setCookie } from "hono/cookie";
@@ -29,6 +30,8 @@ import {
 import type { LearnerRepository } from "./repository/repository";
 import type {
   AppVariables,
+  AttemptCompletionResponse,
+  CompleteAttemptWithReceiptResult,
   AuthenticatedSession,
   ProgressResponse,
   ReviewQueueItem,
@@ -50,14 +53,17 @@ export interface AppDependencies {
 }
 
 const questionIdSchema = z.string().min(1).max(160).regex(/^[a-zA-Z0-9][a-zA-Z0-9_:-]*$/);
+const practiceModeSchema = z.enum(["learn", "mock"]);
 const attemptCreateSchema = z
   .object({
     questionId: questionIdSchema,
-    questionVersion: z.number().int().positive().max(10_000).optional()
+    questionVersion: z.number().int().positive().max(10_000).optional(),
+    mode: practiceModeSchema.default("learn")
   })
   .strict();
 
 const rubricScoreSchema = z.number().int().min(0).max(4);
+const idempotencyKeySchema = z.string().uuid();
 const attemptPatchSchema = z
   .object({
     status: z.enum(["completed", "abandoned"]),
@@ -117,6 +123,49 @@ function durationSince(startedAt: string, now: Date): number {
   const started = new Date(startedAt).getTime();
   if (Number.isNaN(started)) return 0;
   return Math.max(0, Math.floor((now.getTime() - started) / 1_000));
+}
+
+function stableJson(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return '"__undefined__"';
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(",")}}`;
+}
+
+async function completionRequestHash(input: {
+  userId: string;
+  attemptId: string;
+  operationKey: string;
+  body: unknown;
+}): Promise<string> {
+  const source = stableJson(input);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function completionResultResponse(c: ApiContext, result: CompleteAttemptWithReceiptResult): Response {
+  switch (result.outcome) {
+    case "completed":
+      return c.json(result.response);
+    case "replayed":
+      c.header("Idempotency-Replayed", "true");
+      return c.json(result.response);
+    case "idempotency_key_reused":
+      return errorResponse(
+        c,
+        409,
+        "idempotency_key_reused",
+        "This idempotency key was already used with a different completion request."
+      );
+    case "attempt_already_finished":
+      return errorResponse(c, 409, "attempt_already_finished", "This attempt has already been finished.");
+  }
 }
 
 export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
@@ -286,6 +335,7 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
       userId: c.get("auth").user.id,
       questionId: question.id,
       questionVersion: question.version,
+      mode: parsed.data.mode,
       startedAt: now().toISOString()
     });
     return c.json({ attempt: started.attempt }, started.created ? 201 : 200);
@@ -301,50 +351,123 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
     const userId = c.get("auth").user.id;
     const current = await repository.getAttempt(userId, attemptId);
     if (!current) return errorResponse(c, 404, "attempt_not_found", "That attempt does not exist.");
+
+    const completedAt = now();
+    const updateBase = {
+      completedAt: completedAt.toISOString(),
+      durationSeconds: parsed.data.durationSeconds ?? durationSince(current.startedAt, completedAt)
+    };
+
+    if (parsed.data.status === "completed") {
+      const idempotencyKey = idempotencyKeySchema.safeParse(c.req.header("Idempotency-Key"));
+      if (!idempotencyKey.success) {
+        return errorResponse(
+          c,
+          400,
+          "idempotency_key_required",
+          "A valid Idempotency-Key UUID is required to complete an attempt."
+        );
+      }
+      if (parsed.data.selfScore === undefined) {
+        return errorResponse(c, 422, "validation_error", "A completed attempt requires a selfScore from 0 to 4.");
+      }
+
+      const requestHash = await completionRequestHash({
+        userId,
+        attemptId,
+        operationKey: idempotencyKey.data,
+        body: parsed.data
+      });
+      const update = {
+        status: "completed" as const,
+        ...updateBase,
+        selfScore: parsed.data.selfScore,
+        ...(parsed.data.rubricScores === undefined ? {} : { rubricScores: parsed.data.rubricScores })
+      };
+
+      // A lost response can be retried after the attempt reaches a terminal
+      // state. The repository checks the receipt before considering its status.
+      if (current.status !== "in_progress") {
+        return completionResultResponse(
+          c,
+          await repository.completeAttemptWithReceipt({
+            userId,
+            attemptId,
+            update,
+            operationKey: idempotencyKey.data,
+            requestHash,
+            receiptCreatedAt: completedAt.toISOString(),
+            receiptExpiresAt: new Date(completedAt.getTime() + ttlSeconds * 1_000).toISOString()
+          })
+        );
+      }
+
+      const question = questionsById.get(current.questionId);
+      if (!question) {
+        return errorResponse(c, 409, "question_unavailable", "This question is no longer available for scoring.");
+      }
+      if (parsed.data.rubricScores) {
+        const validDimensions = new Set(question.rubric.map((item) => item.dimension));
+        const invalidDimension = Object.keys(parsed.data.rubricScores).find(
+          (dimension) => !validDimensions.has(dimension)
+        );
+        if (invalidDimension) {
+          return errorResponse(c, 422, "validation_error", "A rubric score does not match this question.", {
+            dimension: invalidDimension
+          });
+        }
+      }
+
+      const completedAttempt: PracticeAttempt = {
+        ...current,
+        status: "completed",
+        completedAt: update.completedAt,
+        durationSeconds: update.durationSeconds,
+        selfScore: update.selfScore,
+        ...(update.rubricScores === undefined ? {} : { rubricScores: update.rubricScores })
+      };
+      const mastery = await calculateTopicMasteryAfterCompletion({
+        repository,
+        userId,
+        topicId: question.primaryTopicId,
+        questionsById,
+        completedAttempt
+      });
+      const response: AttemptCompletionResponse = {
+        attempt: completedAttempt,
+        ...(mastery ? { mastery } : {})
+      };
+      return completionResultResponse(
+        c,
+        await repository.completeAttemptWithReceipt({
+          userId,
+          attemptId,
+          update,
+          operationKey: idempotencyKey.data,
+          requestHash,
+          response,
+          receiptCreatedAt: completedAt.toISOString(),
+          receiptExpiresAt: new Date(completedAt.getTime() + ttlSeconds * 1_000).toISOString()
+        })
+      );
+    }
+
     if (current.status !== "in_progress") {
       return errorResponse(c, 409, "attempt_already_finished", "This attempt has already been finished.");
     }
-
     const question = questionsById.get(current.questionId);
     if (!question) {
       return errorResponse(c, 409, "question_unavailable", "This question is no longer available for scoring.");
     }
-    if (parsed.data.rubricScores) {
-      const validDimensions = new Set(question.rubric.map((item) => item.dimension));
-      const invalidDimension = Object.keys(parsed.data.rubricScores).find(
-        (dimension) => !validDimensions.has(dimension)
-      );
-      if (invalidDimension) {
-        return errorResponse(c, 422, "validation_error", "A rubric score does not match this question.", {
-          dimension: invalidDimension
-        });
-      }
-    }
 
-    const completedAt = now();
     const updated = await repository.updateAttempt(userId, attemptId, {
-      status: parsed.data.status,
-      completedAt: completedAt.toISOString(),
-      durationSeconds: parsed.data.durationSeconds ?? durationSince(current.startedAt, completedAt),
-      ...(parsed.data.selfScore === undefined ? {} : { selfScore: parsed.data.selfScore }),
-      ...(parsed.data.rubricScores === undefined ? {} : { rubricScores: parsed.data.rubricScores })
+      status: "abandoned",
+      ...updateBase
     });
     if (!updated) {
       return errorResponse(c, 409, "attempt_already_finished", "This attempt has already been finished.");
     }
-
-    if (updated.status !== "completed" || updated.selfScore === undefined || !updated.completedAt) {
-      return c.json({ attempt: updated });
-    }
-
-    const mastery = await refreshTopicMastery({
-      repository,
-      userId,
-      topicId: question.primaryTopicId,
-      questionsById,
-      now: completedAt
-    });
-    return c.json({ attempt: updated, ...(mastery ? { mastery } : {}) });
+    return c.json({ attempt: updated });
   });
 
   app.get("/api/v1/bookmarks", requireAuth, async (c) => {
@@ -404,16 +527,18 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
   return app;
 }
 
-async function refreshTopicMastery(input: {
+async function calculateTopicMasteryAfterCompletion(input: {
   repository: LearnerRepository;
   userId: string;
   topicId: string;
   questionsById: ReadonlyMap<string, InterviewQuestion>;
-  now: Date;
+  completedAttempt: PracticeAttempt;
 }): Promise<TopicMastery | undefined> {
   const relevantCompleted = (await input.repository.listAttempts(input.userId))
+    .filter((attempt) => attempt.id !== input.completedAttempt.id)
     .filter((attempt) => input.questionsById.get(attempt.questionId)?.primaryTopicId === input.topicId)
     .filter((attempt) => attempt.status === "completed" && typeof attempt.selfScore === "number")
+    .concat(input.completedAttempt)
     .sort((left, right) => left.completedAt?.localeCompare(right.completedAt ?? "") ?? 0);
   const latest = relevantCompleted.at(-1);
   if (!latest || latest.selfScore === undefined || !latest.completedAt) return undefined;
@@ -427,6 +552,5 @@ async function refreshTopicMastery(input: {
     lastPracticedAt: latest.completedAt,
     nextReviewAt: nextReviewAt(latest.selfScore, new Date(latest.completedAt))
   };
-  await input.repository.upsertMastery(mastery);
   return mastery;
 }

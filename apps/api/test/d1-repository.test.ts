@@ -6,6 +6,7 @@ interface StoredAttempt {
   user_id: string;
   question_id: string;
   question_version: number;
+  mode: "learn" | "mock";
   status: "in_progress" | "completed" | "abandoned";
   started_at: string;
   completed_at: string | null;
@@ -28,6 +29,7 @@ class AtomicityD1Double {
     user_id: "user-1",
     question_id: "redis-cache-aside",
     question_version: 1,
+    mode: "learn",
     status: "in_progress",
     started_at: "2026-08-09T12:00:00.000Z",
     completed_at: null,
@@ -35,6 +37,7 @@ class AtomicityD1Double {
     self_score: null
   };
   private scores = new Map<string, number>([["read flow", 1]]);
+  private receipts = new Map<string, { request_hash: string; response_json: string }>();
   failNextBatch = false;
 
   prepare(sql: string): D1PreparedStatement {
@@ -49,11 +52,13 @@ class AtomicityD1Double {
 
     const nextAttempt = { ...this.attempt };
     const nextScores = new Map(this.scores);
+    const nextReceipts = new Map(this.receipts);
     const results = (statements as unknown as TestStatement[]).map((statement) =>
-      this.applyBatchStatement(statement, nextAttempt, nextScores)
+      this.applyBatchStatement(statement, nextAttempt, nextScores, nextReceipts)
     );
     this.attempt = nextAttempt;
     this.scores = nextScores;
+    this.receipts = nextReceipts;
     return results;
   }
 
@@ -69,8 +74,13 @@ class AtomicityD1Double {
     } as unknown as D1PreparedStatement;
   }
 
-  private first(sql: string, values: unknown[]): StoredAttempt | undefined {
-    if (!this.normalise(sql).includes("from practice_attempts")) return undefined;
+  private first(sql: string, values: unknown[]): unknown {
+    const normalised = this.normalise(sql);
+    if (normalised.includes("from mutation_receipts")) {
+      const [userId, operationKey] = values;
+      return this.receipts.get(`${userId}:${operationKey}`);
+    }
+    if (!normalised.includes("from practice_attempts")) return undefined;
     const [attemptId, userId] = values;
     if (attemptId !== this.attempt.id || userId !== this.attempt.user_id) return undefined;
     return { ...this.attempt };
@@ -97,9 +107,24 @@ class AtomicityD1Double {
   private applyBatchStatement(
     statement: TestStatement,
     attempt: StoredAttempt,
-    scores: Map<string, number>
+    scores: Map<string, number>,
+    receipts: Map<string, { request_hash: string; response_json: string }>
   ) {
     const sql = this.normalise(statement.sql);
+    if (sql.startsWith("insert into mutation_receipts")) {
+      const [userId, operationKey, attemptId, requestHash, responseJson] = statement.values;
+      const key = `${userId}:${operationKey}`;
+      if (
+        attempt.id === attemptId &&
+        attempt.user_id === userId &&
+        attempt.status === "in_progress" &&
+        !receipts.has(key)
+      ) {
+        receipts.set(key, { request_hash: String(requestHash), response_json: String(responseJson) });
+        return this.result([], 1);
+      }
+      return this.result();
+    }
     if (sql.startsWith("delete from attempt_rubric_scores")) {
       scores.clear();
       return this.result([], 1);
@@ -109,14 +134,24 @@ class AtomicityD1Double {
       scores.set(String(dimension), Number(score));
       return this.result([], 1);
     }
+    if (sql.startsWith("insert into topic_mastery")) return this.result([], 1);
     if (sql.startsWith("update practice_attempts")) {
-      this.applyUpdate(attempt, statement.values);
+      this.applyUpdate(attempt, statement.values, sql);
       return this.result([], 1);
     }
     return this.result();
   }
 
-  private applyUpdate(attempt: StoredAttempt, values: unknown[]): void {
+  private applyUpdate(attempt: StoredAttempt, values: unknown[], sql = ""): void {
+    if (sql.includes("set status = 'completed'")) {
+      const [completedAt, durationSeconds, selfScore] = values;
+      attempt.status = "completed";
+      attempt.completed_at = completedAt as string;
+      attempt.duration_seconds = durationSeconds as number | null;
+      attempt.self_score = selfScore as number | null;
+      return;
+    }
+
     const [status, completedAt, durationSeconds, selfScore] = values;
     attempt.status = status as StoredAttempt["status"];
     attempt.completed_at = completedAt as string;
@@ -208,7 +243,7 @@ class IdempotentAttemptD1Double {
   private run(sql: string, values: unknown[]) {
     if (!this.normalise(sql).startsWith("insert into practice_attempts")) return this.result();
 
-    const [id, userId, questionId, questionVersion, startedAt] = values;
+    const [id, userId, questionId, questionVersion, mode, startedAt] = values;
     const existing = [...this.attempts.values()].find(
       (attempt) =>
         attempt.user_id === userId &&
@@ -224,6 +259,7 @@ class IdempotentAttemptD1Double {
       user_id: String(userId),
       question_id: String(questionId),
       question_version: Number(questionVersion),
+      mode: mode as "learn" | "mock",
       status: "in_progress",
       started_at: String(startedAt),
       completed_at: null,
@@ -262,6 +298,7 @@ describe("D1LearnerRepository", () => {
       userId: "user-1",
       questionId: "redis-cache-aside",
       questionVersion: 1,
+      mode: "mock" as const,
       startedAt: "2026-08-09T12:00:00.000Z"
     };
 
@@ -272,6 +309,7 @@ describe("D1LearnerRepository", () => {
 
     expect([first.created, retry.created].filter(Boolean)).toHaveLength(1);
     expect(first.attempt.id).toBe(retry.attempt.id);
+    expect(first.attempt.mode).toBe("mock");
     expect(database.inProgressAttemptIds()).toEqual([first.attempt.id]);
     expect(database.statements.join(" ")).toContain(
       "ON CONFLICT(user_id, question_id) WHERE status = 'in_progress' DO NOTHING"
@@ -314,6 +352,68 @@ describe("D1LearnerRepository", () => {
     expect(updated).toMatchObject({
       status: "completed",
       selfScore: 3,
+      rubricScores: { "read flow": 4 }
+    });
+  });
+
+  it("stores a completion receipt atomically and replays the original D1 response", async () => {
+    const database = new AtomicityD1Double();
+    const repository = new D1LearnerRepository(database as unknown as D1Database);
+    const input = {
+      userId: "user-1",
+      attemptId: "attempt-1",
+      update: {
+        status: "completed" as const,
+        completedAt: "2026-08-09T12:30:00.000Z",
+        durationSeconds: 1_800,
+        selfScore: 3,
+        rubricScores: { "read flow": 4 }
+      },
+      operationKey: "00000000-0000-4000-8000-000000000003",
+      requestHash: "request-hash-1",
+      receiptCreatedAt: "2026-08-09T12:30:00.000Z",
+      receiptExpiresAt: "2026-09-08T12:30:00.000Z",
+      response: {
+        attempt: {
+          id: "attempt-1",
+          userId: "user-1",
+          questionId: "redis-cache-aside",
+          questionVersion: 1,
+          mode: "learn" as const,
+          status: "completed" as const,
+          startedAt: "2026-08-09T12:00:00.000Z",
+          completedAt: "2026-08-09T12:30:00.000Z",
+          durationSeconds: 1_800,
+          selfScore: 3,
+          rubricScores: { "read flow": 4 }
+        },
+        mastery: {
+          userId: "user-1",
+          topicId: "redis-caching",
+          masteryScore: 75,
+          confidence: 3,
+          attemptsCount: 1,
+          lastPracticedAt: "2026-08-09T12:30:00.000Z",
+          nextReviewAt: "2026-08-17T12:30:00.000Z"
+        }
+      }
+    };
+
+    const first = await repository.completeAttemptWithReceipt(input);
+    expect(first).toMatchObject({ outcome: "completed", response: input.response });
+
+    const replay = await repository.completeAttemptWithReceipt({ ...input, response: undefined });
+    expect(replay).toMatchObject({ outcome: "replayed", response: input.response });
+
+    const conflict = await repository.completeAttemptWithReceipt({
+      ...input,
+      requestHash: "request-hash-2",
+      response: undefined
+    });
+    expect(conflict).toEqual({ outcome: "idempotency_key_reused" });
+    await expect(repository.getAttempt("user-1", "attempt-1")).resolves.toMatchObject({
+      status: "completed",
+      mode: "learn",
       rubricScores: { "read flow": 4 }
     });
   });

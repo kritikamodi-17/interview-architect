@@ -1,5 +1,8 @@
 import type { PracticeAttempt, TopicMastery } from "@interview-architect/domain";
 import type {
+  AttemptCompletionResponse,
+  CompleteAttemptWithReceiptInput,
+  CompleteAttemptWithReceiptResult,
   AnonymousUser,
   CreateAttemptInput,
   SessionRecord,
@@ -19,6 +22,18 @@ function copyMastery(mastery: TopicMastery): TopicMastery {
   return { ...mastery };
 }
 
+function copyCompletionResponse(response: AttemptCompletionResponse): AttemptCompletionResponse {
+  return {
+    attempt: copyAttempt(response.attempt),
+    ...(response.mastery ? { mastery: copyMastery(response.mastery) } : {})
+  };
+}
+
+interface CompletionReceipt {
+  requestHash: string;
+  response: AttemptCompletionResponse;
+}
+
 /** A deterministic repository for API tests and local dependency injection. */
 export class MemoryLearnerRepository implements LearnerRepository {
   private readonly users = new Map<string, AnonymousUser>();
@@ -26,6 +41,7 @@ export class MemoryLearnerRepository implements LearnerRepository {
   private readonly attempts = new Map<string, PracticeAttempt>();
   private readonly bookmarks = new Map<string, Set<string>>();
   private readonly mastery = new Map<string, TopicMastery>();
+  private readonly receipts = new Map<string, Map<string, CompletionReceipt>>();
 
   async createAnonymousSession(input: CreateAnonymousSessionInput): Promise<void> {
     this.users.set(input.user.id, { ...input.user });
@@ -69,6 +85,7 @@ export class MemoryLearnerRepository implements LearnerRepository {
   async deleteUser(userId: string): Promise<void> {
     this.users.delete(userId);
     this.bookmarks.delete(userId);
+    this.receipts.delete(userId);
 
     for (const [tokenHash, session] of this.sessions) {
       if (session.userId === userId) this.sessions.delete(tokenHash);
@@ -107,6 +124,7 @@ export class MemoryLearnerRepository implements LearnerRepository {
       userId: input.userId,
       questionId: input.questionId,
       questionVersion: input.questionVersion,
+      mode: input.mode,
       status: "in_progress",
       startedAt: input.startedAt
     };
@@ -132,6 +150,52 @@ export class MemoryLearnerRepository implements LearnerRepository {
     };
     this.attempts.set(attemptId, updated);
     return copyAttempt(updated);
+  }
+
+  async completeAttemptWithReceipt(
+    input: CompleteAttemptWithReceiptInput
+  ): Promise<CompleteAttemptWithReceiptResult> {
+    const receiptsForUser = this.receipts.get(input.userId);
+    const existing = receiptsForUser?.get(input.operationKey);
+    if (existing) {
+      return existing.requestHash === input.requestHash
+        ? { outcome: "replayed", response: copyCompletionResponse(existing.response) }
+        : { outcome: "idempotency_key_reused" };
+    }
+
+    const current = this.attempts.get(input.attemptId);
+    if (!current || current.userId !== input.userId || current.status !== "in_progress" || !input.response) {
+      return { outcome: "attempt_already_finished" };
+    }
+
+    const updated: PracticeAttempt = {
+      ...current,
+      status: "completed",
+      completedAt: input.update.completedAt,
+      ...(input.update.durationSeconds === undefined ? {} : { durationSeconds: input.update.durationSeconds }),
+      selfScore: input.update.selfScore,
+      ...(input.update.rubricScores === undefined
+        ? {}
+        : { rubricScores: { ...input.update.rubricScores } })
+    };
+    this.attempts.set(input.attemptId, updated);
+
+    if (input.response.mastery) {
+      this.mastery.set(
+        `${input.userId}:${input.response.mastery.topicId}`,
+        copyMastery(input.response.mastery)
+      );
+    }
+
+    const response = copyCompletionResponse({
+      ...input.response,
+      attempt: updated
+    });
+    const nextReceipts = receiptsForUser ?? new Map<string, CompletionReceipt>();
+    nextReceipts.set(input.operationKey, { requestHash: input.requestHash, response });
+    this.receipts.set(input.userId, nextReceipts);
+
+    return { outcome: "completed", response: copyCompletionResponse(response) };
   }
 
   async listBookmarks(userId: string): Promise<string[]> {
@@ -162,9 +226,5 @@ export class MemoryLearnerRepository implements LearnerRepository {
       .filter((item) => item.userId === userId)
       .sort((a, b) => a.topicId.localeCompare(b.topicId))
       .map(copyMastery);
-  }
-
-  async upsertMastery(mastery: TopicMastery): Promise<void> {
-    this.mastery.set(`${mastery.userId}:${mastery.topicId}`, copyMastery(mastery));
   }
 }
