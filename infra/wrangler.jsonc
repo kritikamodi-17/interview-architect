@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "interview-architect",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "037c3e8b-3ed7-45a1-a23b-dbd3a483a611",
       "migrations_dir": "./migrations"
     }
   ]
