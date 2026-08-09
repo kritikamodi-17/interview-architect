@@ -2,6 +2,8 @@
 
 An interview-preparation platform for backend and system-design candidates. It pairs a structured curriculum with detailed, original question prompts, practice workflows, progress tracking, and an explainable study coach.
 
+**Live demo:** [interview-architect.kritikamodi.workers.dev](https://interview-architect.kritikamodi.workers.dev)
+
 The first release covers eight backend-system-design modules, with especially deep coverage of **Redis** and **Kafka**. It includes databases, APIs, caching, reliability, distributed systems, observability, and security case studies.
 
 ## Product principles
