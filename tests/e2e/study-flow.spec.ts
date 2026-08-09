@@ -46,3 +46,42 @@ test("learner can search, complete a rubric-scored prompt, and retain progress a
   await page.reload();
   await expect(page.locator(".progress-hero__main").getByText(/0 of \d+ prompts practiced/)).toBeVisible();
 });
+
+test("question-bank launch choices retain filters and offer a dashboard resume", async ({ page }) => {
+  const title = "Prevent a cache stampede on an expensive profile endpoint";
+
+  await page.goto("/questions?q=cache+stampede&status=fresh");
+  await expect(page.locator(".sync-pill")).toContainText("Synced", { timeout: 15_000 });
+
+  const card = page.locator(".question-card").filter({ hasText: title });
+  await expect(card).toBeVisible();
+  await card.getByRole("link", { name: `Start a Mock session for ${title}` }).click();
+
+  await expect(page).toHaveURL(/\/questions\/prevent-cache-stampede-on-expensive-profile\?mode=mock&from=/);
+  await page.getByRole("button", { name: "Start Mock session", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Discard session", exact: true })).toBeVisible();
+
+  await page.getByLabel("Breadcrumb").getByRole("link", { name: "Question bank", exact: true }).click();
+  await expect(page).toHaveURL(/\/questions\?q=cache\+stampede&status=fresh/);
+  await expect(card.getByRole("link", { name: `Resume Mock session for ${title}` })).toBeVisible();
+
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: `Resume Mock session for ${title}` })).toBeVisible();
+});
+
+test("question-bank Learn and Mock choices remain touch-friendly on mobile", async ({ page }) => {
+  const title = "Prevent a cache stampede on an expensive profile endpoint";
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/questions?q=cache+stampede");
+  await expect(page.locator(".sync-pill")).toContainText("Synced", { timeout: 15_000 });
+
+  const card = page.locator(".question-card").filter({ hasText: title });
+  const learn = card.getByRole("link", { name: `Start a Learn session for ${title}` });
+  const mock = card.getByRole("link", { name: `Start a Mock session for ${title}` });
+  await expect(learn).toBeVisible();
+  await expect(mock).toBeVisible();
+
+  const [learnBox, mockBox] = await Promise.all([learn.boundingBox(), mock.boundingBox()]);
+  expect(learnBox?.height).toBeGreaterThanOrEqual(44);
+  expect(mockBox?.height).toBeGreaterThanOrEqual(44);
+});

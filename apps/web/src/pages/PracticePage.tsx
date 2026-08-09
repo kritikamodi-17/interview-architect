@@ -10,6 +10,7 @@ import { Icon } from "../components/Icon";
 import { EmptyState, InlineError, formatMinutes } from "../components/shared";
 import { catalogQuestions, moduleName, questionBySlug, topicName } from "../data/catalog";
 import { usePracticeSession } from "../hooks/usePracticeSession";
+import { practicePath, questionBankReturnPath } from "../lib/practice-route";
 
 function normalizedMode(value: string | null): PracticeMode {
   return value === "mock" ? "mock" : "learn";
@@ -30,6 +31,7 @@ function PracticeStudio({ question }: { question: InterviewQuestion }): React.JS
   const [searchParams, setSearchParams] = useSearchParams();
   const rawMode = searchParams.get("mode");
   const requestedMode = normalizedMode(rawMode);
+  const returnTo = questionBankReturnPath(searchParams.get("from"));
 
   useEffect(() => {
     if (rawMode === requestedMode) return;
@@ -57,6 +59,7 @@ function PracticeStudio({ question }: { question: InterviewQuestion }): React.JS
         attempt={session.attempt}
         mode={session.mode}
         requestedMode={requestedMode}
+        returnTo={returnTo}
         modeMismatch={session.modeMismatch}
         elapsedSeconds={session.elapsedSeconds}
         isRunning={session.isRunning}
@@ -123,7 +126,7 @@ function PracticeStudio({ question }: { question: InterviewQuestion }): React.JS
           <section className="sidebar-checklist"><p className="eyebrow">Before you finish</p><ul><li><Icon name="check" size={15} />State your assumptions</li><li><Icon name="check" size={15} />Draw the happy path</li><li><Icon name="check" size={15} />Name a failure mode</li><li><Icon name="check" size={15} />Explain the tradeoff</li></ul></section>
           <section className="studio-privacy-card"><Icon name="info" size={17} /><div><strong>Private by design</strong><p>Workspace notes and interviewer responses stay in this browser. Only your mode, elapsed time, and scores update progress.</p></div></section>
           {question.references.length ? <section className="reference-card"><p className="eyebrow">Keep learning</p>{question.references.map((reference) => <a href={reference.href} target="_blank" rel="noreferrer" key={reference.href}>{reference.label}<Icon name="arrow-up-right" size={14} /></a>)}</section> : null}
-          {nextQuestion && nextQuestion.id !== question.id ? <section className="next-question-card"><p className="eyebrow">Up next in this module</p><strong>{nextQuestion.title}</strong><Link to={`/questions/${nextQuestion.slug}?mode=${session.mode}`}>Open next prompt <Icon name="arrow-right" size={14} /></Link></section> : null}
+          {nextQuestion && nextQuestion.id !== question.id ? <section className="next-question-card"><p className="eyebrow">Up next in this module</p><strong>{nextQuestion.title}</strong><Link to={practicePath(nextQuestion.slug, session.mode, returnTo)}>Open next prompt <Icon name="arrow-right" size={14} /></Link></section> : null}
         </aside>
       </div>
     </div>

@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import type { CoachRecommendation, CoachRequest, InterviewQuestion } from "@interview-architect/domain";
-import { api } from "../lib/api";
+import type { CoachRecommendation, CoachRequest, InterviewQuestion, PracticeAttempt } from "@interview-architect/domain";
+import { api, type ReviewQueueItem } from "../lib/api";
 import {
   catalogModules,
   catalogQuestions,
   getModuleQuestions,
   getModuleTopics,
-  moduleById,
-  questionBySlug,
   topicName
 } from "../data/catalog";
 import { useLearner } from "../hooks/useLearner";
+import { practiceModeLabel, practicePath } from "../lib/practice-route";
 import { Icon } from "../components/Icon";
 import {
   DifficultyBadge,
@@ -26,6 +25,34 @@ function completedQuestionIds(attempts: ReturnType<typeof useLearner>["attempts"
   return new Set(
     attempts.filter((attempt) => attempt.status === "completed").map((attempt) => attempt.questionId)
   );
+}
+
+function newestInProgressAttempt(
+  attempts: PracticeAttempt[],
+  questionId?: string
+): PracticeAttempt | undefined {
+  return attempts
+    .filter((attempt) => attempt.status === "in_progress" && (!questionId || attempt.questionId === questionId))
+    .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
+}
+
+function questionForReviewItem(item: ReviewQueueItem): InterviewQuestion | undefined {
+  const id = typeof item.question === "string" ? item.question : item.question.id;
+  return catalogQuestions.find((question) => question.id === id);
+}
+
+function localReviewQuestion(
+  mastery: ReturnType<typeof useLearner>["mastery"],
+  attempts: ReturnType<typeof useLearner>["attempts"]
+): InterviewQuestion | undefined {
+  const nextTopic = mastery
+    .filter((entry) => entry.nextReviewAt && new Date(entry.nextReviewAt).getTime() <= Date.now())
+    .sort((left, right) => (left.nextReviewAt ?? "").localeCompare(right.nextReviewAt ?? ""))[0];
+  if (!nextTopic) return undefined;
+
+  const completed = completedQuestionIds(attempts);
+  const candidates = catalogQuestions.filter((question) => question.primaryTopicId === nextTopic.topicId);
+  return candidates.find((question) => !completed.has(question.id)) ?? candidates[0];
 }
 
 function chooseLocalRecommendation(
@@ -119,6 +146,7 @@ function CoachCard() {
   const recommendation = remoteRecommendation ?? fallback;
   if (!recommendation) return null;
   const question = recommendation.question;
+  const activeAttempt = newestInProgressAttempt(attempts, question.id);
 
   return (
     <section className="coach-card" aria-labelledby="coach-heading">
@@ -164,24 +192,80 @@ function CoachCard() {
         </div>
         <h3>{question.title}</h3>
         <p>{recommendation.reason}</p>
-        <Link className="button button--light" to={`/questions/${question.slug}`}>
-          Start this prompt <Icon name="arrow-right" size={16} />
-        </Link>
+        <div className="coach-recommendation__actions">
+          <Link className="button button--light" to={practicePath(question.slug, activeAttempt?.mode ?? "learn")} aria-label={`${activeAttempt ? `Resume ${practiceModeLabel(activeAttempt.mode)} session for` : "Start a Learn session for"} ${question.title}`}>
+            {activeAttempt ? `Resume ${practiceModeLabel(activeAttempt.mode)} session` : "Start Learn session"} <Icon name="arrow-right" size={16} />
+          </Link>
+          {!activeAttempt ? <Link className="text-link" to={practicePath(question.slug, "mock")} aria-label={`Start a Mock session for ${question.title}`}>Try a Mock session <Icon name="arrow-right" size={14} /></Link> : null}
+        </div>
       </article>
     </section>
   );
 }
 
+function ReviewCard(): React.JSX.Element {
+  const { attempts, mastery, syncStatus } = useLearner();
+  const [remoteQueue, setRemoteQueue] = useState<ReviewQueueItem[] | undefined>(undefined);
+  const activeAttempt = useMemo(() => newestInProgressAttempt(attempts), [attempts]);
+  const activeQuestion = activeAttempt
+    ? catalogQuestions.find((question) => question.id === activeAttempt.questionId)
+    : undefined;
+  const fallbackQuestion = useMemo(() => localReviewQuestion(mastery, attempts), [mastery, attempts]);
+
+  useEffect(() => {
+    let current = true;
+    if (syncStatus !== "online") {
+      setRemoteQueue(undefined);
+      return;
+    }
+
+    void api.getReviewQueue()
+      .then((response) => {
+        if (current) setRemoteQueue(response.items);
+      })
+      .catch(() => {
+        if (current) setRemoteQueue(undefined);
+      });
+
+    return () => {
+      current = false;
+    };
+  }, [syncStatus]);
+
+  const reviewQuestion = remoteQueue === undefined
+    ? fallbackQuestion
+    : remoteQueue.map(questionForReviewItem).find((question): question is InterviewQuestion => Boolean(question));
+
+  if (activeAttempt && activeQuestion) {
+    const label = practiceModeLabel(activeAttempt.mode);
+    return <section className="review-card review-card--resume" aria-labelledby="resume-studio-title">
+      <span className="review-card__icon"><Icon name="play" size={18} /></span>
+      <div><p className="eyebrow">Your active studio</p><strong id="resume-studio-title">{activeQuestion.title}</strong><p>Your private {label} workspace is ready to continue.</p></div>
+      <Link className="button button--secondary button--small" to={practicePath(activeQuestion.slug, activeAttempt.mode)} aria-label={`Resume ${label} session for ${activeQuestion.title}`}>Resume {label}<Icon name="arrow-right" size={14} /></Link>
+    </section>;
+  }
+
+  if (reviewQuestion) {
+    return <section className="review-card review-card--due" aria-labelledby="review-title">
+      <span className="review-card__icon"><Icon name="refresh" size={18} /></span>
+      <div><p className="eyebrow">Spaced repetition</p><strong id="review-title">Review {reviewQuestion.title}</strong><p>A short Learn session is due now—restate the tradeoff before checking the framework.</p></div>
+      <Link className="button button--secondary button--small" to={practicePath(reviewQuestion.slug, "learn")} aria-label={`Start a Learn review for ${reviewQuestion.title}`}>Review now<Icon name="arrow-right" size={14} /></Link>
+    </section>;
+  }
+
+  return <section className="review-card" aria-label="Review queue">
+    <span className="review-card__icon"><Icon name="calendar" size={18} /></span>
+    <div><strong>Your review queue is clear</strong><p>Complete a practice review to begin spaced repetition.</p></div>
+  </section>;
+}
+
 export function DashboardPage() {
-  const { attempts, bookmarks, mastery } = useLearner();
+  const { attempts, bookmarks } = useLearner();
   const completed = useMemo(() => completedQuestionIds(attempts), [attempts]);
   const completedAttempts = attempts.filter((attempt) => attempt.status === "completed");
   const averageScore = completedAttempts.length
     ? (completedAttempts.reduce((sum, attempt) => sum + (attempt.selfScore ?? 0), 0) / completedAttempts.length).toFixed(1)
     : "—";
-  const reviewDue = mastery.filter(
-    (item) => item.nextReviewAt && new Date(item.nextReviewAt).getTime() <= Date.now()
-  ).length;
   const recentQuestions = completedAttempts
     .slice()
     .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""))
@@ -209,10 +293,7 @@ export function DashboardPage() {
             <p>From foundations through cache, streams, reliability, and final case studies.</p>
             <Link to="/curriculum" className="text-link">Explore the map <Icon name="arrow-right" size={14} /></Link>
           </section>
-          <section className="review-card">
-            <span className="review-card__icon"><Icon name="calendar" size={18} /></span>
-            <div><strong>{reviewDue ? `${reviewDue} review ${reviewDue === 1 ? "is" : "are"} due` : "Your review queue is clear"}</strong><p>{reviewDue ? "A quick revisit locks in the hard-earned insight." : "Complete a practice review to begin spaced repetition."}</p></div>
-          </section>
+          <ReviewCard />
         </div>
       </section>
 

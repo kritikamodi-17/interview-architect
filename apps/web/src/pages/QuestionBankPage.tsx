@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import type { Difficulty, QuestionFormat } from "@interview-architect/domain";
 import { catalogModules, catalogQuestions, catalogTopics, getSearchableText, moduleName, topicName } from "../data/catalog";
 import { useLearner } from "../hooks/useLearner";
@@ -55,7 +55,9 @@ function readableFilter(filter: string): string {
 
 export function QuestionBankPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const searchParamString = searchParams.toString();
+  const returnTo = `${location.pathname}${location.search}`;
   // The URL is the source of truth, so browser back/forward restores every
   // filter rather than leaving the controls on a stale local state.
   const filters = useMemo(() => initialFilters(searchParams), [searchParamString, searchParams]);
@@ -151,7 +153,7 @@ export function QuestionBankPage() {
           <span className="results-note"><Icon name="sliders" size={16} />{filters.completion === "fresh" ? "Pick one and explain it out loud" : "Save anything worth revisiting"}</span>
         </header>
         {activeFilters.length ? <div className="active-filter-list">{filters.moduleId ? <span>{moduleName(filters.moduleId)}<button type="button" aria-label="Remove module filter" onClick={() => setFilter("moduleId", "")}><Icon name="x" size={13} /></button></span> : null}{filters.topicId ? <span>{topicName(filters.topicId)}<button type="button" aria-label="Remove topic filter" onClick={() => setFilter("topicId", "")}><Icon name="x" size={13} /></button></span> : null}{filters.difficulty ? <span>{readableFilter(filters.difficulty)}<button type="button" aria-label="Remove difficulty filter" onClick={() => setFilter("difficulty", "")}><Icon name="x" size={13} /></button></span> : null}{filters.type ? <span>{readableFilter(filters.type)}<button type="button" aria-label="Remove format filter" onClick={() => setFilter("type", "")}><Icon name="x" size={13} /></button></span> : null}</div> : null}
-        {filtered.length ? <div className="question-grid">{filtered.map((question) => <QuestionCard question={question} key={question.id} />)}</div> : <EmptyState icon="search" title="No prompt matches that combination" description="Try clearing a filter or search for a broader system-design concept." actionTo="/questions" actionLabel="Reset question bank" />}
+        {filtered.length ? <div className="question-grid">{filtered.map((question) => <QuestionCard question={question} key={question.id} showLaunchControls returnTo={returnTo} />)}</div> : <EmptyState icon="search" title="No prompt matches that combination" description="Try clearing a filter or search for a broader system-design concept." actionTo="/questions" actionLabel="Reset question bank" />}
       </section>
 
       <aside className="question-bank__footnote"><Icon name="info" size={17} /><p>These prompts are designed for deliberate practice. A strong answer names assumptions, alternatives, and the cost of each tradeoff.</p><Link to="/curriculum">See the learning map <Icon name="arrow-right" size={14} /></Link></aside>

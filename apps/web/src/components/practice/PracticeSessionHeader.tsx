@@ -9,6 +9,7 @@ interface PracticeSessionHeaderProps {
   attempt: PracticeAttempt | null;
   mode: PracticeMode;
   requestedMode: PracticeMode;
+  returnTo: string;
   modeMismatch: boolean;
   elapsedSeconds: number;
   isRunning: boolean;
@@ -27,6 +28,7 @@ export function PracticeSessionHeader({
   attempt,
   mode,
   requestedMode,
+  returnTo,
   modeMismatch,
   elapsedSeconds,
   isRunning,
@@ -43,7 +45,7 @@ export function PracticeSessionHeader({
   const sessionState = isCompleted ? "Complete" : attempt ? (isRunning ? "Live" : "Paused") : "Ready";
   return (
     <>
-      <nav className="breadcrumb" aria-label="Breadcrumb"><Link to="/questions">Question bank</Link><Icon name="chevron-right" size={14} /><Link to={`/questions?topic=${encodeURIComponent(question.primaryTopicId)}`}>{topicName(question.primaryTopicId)}</Link><Icon name="chevron-right" size={14} /><span aria-current="page">Design studio</span></nav>
+      <nav className="breadcrumb" aria-label="Breadcrumb"><Link to={returnTo}>Question bank</Link><Icon name="chevron-right" size={14} /><Link to={`/questions?topic=${encodeURIComponent(question.primaryTopicId)}`}>{topicName(question.primaryTopicId)}</Link><Icon name="chevron-right" size={14} /><span aria-current="page">Design studio</span></nav>
       <header className="practice-header studio-session-header">
         <div className="practice-header__main">
           <div className="practice-header__tags"><DifficultyBadge difficulty={question.difficulty} /><TypeBadge type={question.type} /><span><Icon name="clock" size={15} />{formatMinutes(question.estimatedMinutes)}</span><span className={`studio-mode-badge studio-mode-badge--${mode}`}><Icon name={isMock ? "clock" : "lightbulb"} size={14} />{isMock ? "Mock" : "Learn"}</span></div>
