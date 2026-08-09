@@ -1,0 +1,64 @@
+---
+description: Learner journeys and API entry points for Interview Architect flow validation.
+globs:
+alwaysApply: false
+---
+
+# business-flows.mdc — Interview Architect
+
+```yaml
+businessFlows:
+  - id: curriculum-discovery
+    name: Browse structured curriculum
+    description: A visitor browses the eight-module backend and system-design curriculum without requiring learner-state API availability.
+    entryPoints:
+      - GET /curriculum
+      - apps/web/src/pages/CurriculumPage.tsx
+    criticality: high
+
+  - id: question-discovery
+    name: Search and filter question bank
+    description: A learner uses URL-backed search and module/topic/difficulty/format/status filters to find a suitable practice prompt.
+    entryPoints:
+      - GET /questions
+      - apps/web/src/pages/QuestionBankPage.tsx
+    criticality: high
+
+  - id: timed-practice
+    name: Complete a timed practice attempt
+    description: A learner opens a question, starts or resumes an anonymous attempt, uses hints and answer guidance, self-scores rubric dimensions, and records completion.
+    entryPoints:
+      - GET /questions/:slug
+      - POST /api/v1/attempts
+      - PATCH /api/v1/attempts/:id
+      - apps/web/src/pages/PracticePage.tsx
+    criticality: high
+
+  - id: learner-progress
+    name: View progress and saved questions
+    description: An anonymous learner loads aggregate progress, mastery, recent attempts, and bookmarks from the same-origin API.
+    entryPoints:
+      - GET /
+      - GET /progress
+      - GET /api/v1/progress
+      - GET /api/v1/bookmarks
+    criticality: high
+
+  - id: adaptive-review
+    name: Receive next study recommendation and review due work
+    description: The deterministic coach and review queue use learner progress, prerequisites, available time, and recency to recommend the next question.
+    entryPoints:
+      - POST /api/v1/coach/next
+      - GET /api/v1/review-queue
+      - apps/web/src/pages/DashboardPage.tsx
+    criticality: medium
+
+  - id: data-erasure
+    name: Erase anonymous learner data
+    description: A learner permanently deletes server-side anonymous progress and clears browser-owned learner storage and drafts.
+    entryPoints:
+      - DELETE /api/v1/me
+      - apps/web/src/hooks/useLearner.tsx
+      - apps/web/src/pages/PracticePage.tsx
+    criticality: high
+```

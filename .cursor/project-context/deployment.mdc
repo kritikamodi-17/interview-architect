@@ -1,0 +1,38 @@
+---
+description: Local, CI, and Cloudflare production deployment facts for Interview Architect.
+globs:
+alwaysApply: false
+---
+
+# deployment.mdc — Interview Architect
+
+```yaml
+deployment:
+  cloudProvider: Cloudflare Workers and Cloudflare D1
+
+  environments:
+    - name: local
+      purpose: Developer workstation with local D1 migrations, Vite frontend, and Wrangler Worker API.
+      runCommand: npm run dev
+    - name: production
+      purpose: Public portfolio deployment at interview-architect.kritikamodi.workers.dev.
+      deployMechanism: Apply remote D1 migrations, then run npx wrangler deploy --config infra/wrangler.jsonc with account authorization.
+
+  strategy:
+    type: Manual Worker deployment with same-origin static assets and API.
+    featureFlags: No feature-flag system is configured.
+
+  rollback:
+    code: Revert the production commit, rebuild, and redeploy the previous known-good Worker/static assets version.
+    database: Use a forward corrective D1 migration; do not apply destructive rollback SQL to production without a verified recovery plan.
+    config: Revert the relevant infra/wrangler.jsonc or static-header change in a dedicated commit and redeploy.
+
+  ci:
+    provider: GitHub Actions
+    prChecks: content validation, typecheck, Vitest suites, production build, and Chromium Playwright E2E must pass before merge.
+    watchCommand: gh pr checks {number}
+
+  observability:
+    apm: No external APM configured; use Worker health endpoint and Cloudflare dashboard/Worker logs for current operational visibility.
+    logs: Sanitized application errors only; do not log session cookies, drafts, provider keys, or secrets.
+```
