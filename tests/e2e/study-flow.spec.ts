@@ -17,6 +17,7 @@ test("learner can search, complete a rubric-scored prompt, and retain progress a
   await expect(
     page.getByRole("heading", { name: "Prevent a cache stampede on an expensive profile endpoint" })
   ).toBeVisible();
+  await page.getByRole("button", { name: "Start Learn session", exact: true }).click();
   await page.getByRole("button", { name: /reveal answer & rubric/i }).click();
 
   // Score cards are labels, so exercise their visible interactive surface
@@ -25,9 +26,9 @@ test("learner can search, complete a rubric-scored prompt, and retain progress a
   await page.locator('label:has(input[name="Technical design"][value="3"])').click();
   await page.locator('label:has(input[name="Failure handling & verification"][value="3"])').click();
   await page.locator('label:has(input[name="self-score"][value="3"])').click();
-  await page.getByRole("button", { name: /save review & update progress/i }).click();
+  await page.getByRole("button", { name: /complete session & update progress/i }).click();
 
-  await expect(page.getByRole("status")).toContainText(/review saved/i);
+  await expect(page.getByRole("status").filter({ hasText: /review saved/i })).toBeVisible();
   await page.reload();
 
   await page.getByRole("link", { name: "My progress" }).first().click();

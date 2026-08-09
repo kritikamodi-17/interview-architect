@@ -6,6 +6,7 @@ import type {
 } from "@interview-architect/domain";
 import type {
   AttemptCompletionResponse,
+  CompletionMasteryContext,
   CompleteAttemptWithReceiptInput,
   CompleteAttemptWithReceiptResult,
   AnonymousUser,
@@ -416,6 +417,12 @@ export class D1LearnerRepository implements LearnerRepository {
         : { outcome: "idempotency_key_reused" };
     }
     if (!input.response) return { outcome: "attempt_already_finished" };
+    if (input.masteryContext) {
+      return this.completeAttemptWithCalculatedMastery(input as CompleteAttemptWithReceiptInput & {
+        response: AttemptCompletionResponse;
+        masteryContext: CompletionMasteryContext;
+      });
+    }
 
     const response = copyCompletionResponse(input.response);
     const guardValues = [
@@ -548,6 +555,253 @@ export class D1LearnerRepository implements LearnerRepository {
     } catch (error) {
       // Concurrent identical requests can race on the receipt key. If the
       // transaction that won the race committed, return its immutable result.
+      const racedReceipt = await this.findCompletionReceipt(input.userId, input.operationKey);
+      if (racedReceipt) {
+        return racedReceipt.requestHash === input.requestHash
+          ? { outcome: "replayed", response: racedReceipt.response }
+          : { outcome: "idempotency_key_reused" };
+      }
+      throw error;
+    }
+
+    const racedReceipt = await this.findCompletionReceipt(input.userId, input.operationKey);
+    if (racedReceipt) {
+      return racedReceipt.requestHash === input.requestHash
+        ? { outcome: "replayed", response: racedReceipt.response }
+        : { outcome: "idempotency_key_reused" };
+    }
+    return { outcome: "attempt_already_finished" };
+  }
+
+  /**
+   * Compute one topic's aggregate after the attempt update inside the same D1
+   * batch. This prevents two concurrent completions from both writing an
+   * attempts_count of one based on a stale pre-transaction read.
+   */
+  private async completeAttemptWithCalculatedMastery(
+    input: CompleteAttemptWithReceiptInput & {
+      response: AttemptCompletionResponse;
+      masteryContext: CompletionMasteryContext;
+    }
+  ): Promise<CompleteAttemptWithReceiptResult> {
+    const guardValues = [
+      input.attemptId,
+      input.userId,
+      input.userId,
+      input.operationKey,
+      input.attemptId,
+      input.requestHash
+    ];
+    const receiptGuard = `
+      EXISTS (
+        SELECT 1 FROM mutation_receipts
+        WHERE user_id = ? AND operation_key = ? AND attempt_id = ? AND request_hash = ?
+          AND response_json = '{"pending":true}'
+      )`;
+    const attemptAndReceiptGuard = `
+      EXISTS (
+        SELECT 1 FROM practice_attempts
+        WHERE id = ? AND user_id = ? AND status = 'in_progress'
+      )
+      AND ${receiptGuard}`;
+    const statements: D1PreparedStatement[] = [
+      // Reserve the immutable operation key before changing data. The final
+      // receipt response is populated later in this same transaction from the
+      // database-visible attempt and topic mastery state.
+      this.db
+        .prepare(
+          `INSERT INTO mutation_receipts
+             (user_id, operation_key, attempt_id, request_hash, response_json, http_status, created_at, expires_at)
+           SELECT ?, ?, ?, ?, '{"pending":true}', 200, ?, ?
+           WHERE EXISTS (
+             SELECT 1 FROM practice_attempts
+             WHERE id = ? AND user_id = ? AND status = 'in_progress'
+           )
+           ON CONFLICT(user_id, operation_key) DO NOTHING`
+        )
+        .bind(
+          input.userId,
+          input.operationKey,
+          input.attemptId,
+          input.requestHash,
+          input.receiptCreatedAt,
+          input.receiptExpiresAt,
+          input.attemptId,
+          input.userId
+        ),
+      this.db
+        .prepare(
+          `DELETE FROM attempt_rubric_scores
+           WHERE attempt_id = ? AND ${attemptAndReceiptGuard}`
+        )
+        .bind(input.attemptId, ...guardValues)
+    ];
+
+    for (const [dimension, score] of Object.entries(input.update.rubricScores ?? {})) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO attempt_rubric_scores (attempt_id, dimension, score)
+             SELECT ?, ?, ?
+             WHERE ${attemptAndReceiptGuard}`
+          )
+          .bind(input.attemptId, dimension, score, ...guardValues)
+      );
+    }
+
+    statements.push(
+      this.db
+        .prepare(
+          `UPDATE practice_attempts
+           SET status = 'completed', completed_at = ?, duration_seconds = ?, self_score = ?
+           WHERE id = ? AND user_id = ? AND status = 'in_progress'
+             AND ${receiptGuard}`
+        )
+        .bind(
+          input.update.completedAt,
+          input.update.durationSeconds ?? null,
+          input.update.selfScore,
+          input.attemptId,
+          input.userId,
+          input.userId,
+          input.operationKey,
+          input.attemptId,
+          input.requestHash
+        )
+    );
+    const attemptStatementIndex = statements.length - 1;
+
+    const topicQuestionIds = [...new Set(input.masteryContext.questionIds)];
+    if (!topicQuestionIds.length) return { outcome: "attempt_already_finished" };
+    const topicPlaceholders = topicQuestionIds.map(() => "?").join(", ");
+    statements.push(
+      this.db
+        .prepare(
+          `WITH relevant AS (
+             SELECT id, self_score, completed_at, started_at,
+                    ROW_NUMBER() OVER (ORDER BY completed_at ASC, started_at ASC, id ASC) - 1 AS completion_index,
+                    COUNT(*) OVER () AS total_count
+             FROM practice_attempts
+             WHERE user_id = ?
+               AND status = 'completed'
+               AND self_score IS NOT NULL
+               AND question_id IN (${topicPlaceholders})
+           ),
+           aggregate AS (
+             SELECT
+               CAST(ROUND(MIN(100.0, SUM(self_score * (total_count + completion_index)) * 25.0 / SUM(total_count + completion_index))) AS INTEGER) AS mastery_score,
+               COUNT(*) AS attempts_count
+             FROM relevant
+           ),
+           latest AS (
+             SELECT self_score, completed_at
+             FROM relevant
+             ORDER BY completed_at DESC, started_at DESC, id DESC
+             LIMIT 1
+           )
+           INSERT INTO topic_mastery
+             (user_id, topic_id, mastery_score, confidence, attempts_count,
+              last_practiced_at, next_review_at, updated_at)
+           SELECT ?, ?, aggregate.mastery_score, latest.self_score, aggregate.attempts_count,
+                  latest.completed_at,
+                  strftime('%Y-%m-%dT%H:%M:%fZ', datetime(
+                    latest.completed_at,
+                    '+' || CASE latest.self_score
+                      WHEN 0 THEN 1 WHEN 1 THEN 2 WHEN 2 THEN 4 WHEN 3 THEN 8 ELSE 14
+                    END || ' days'
+                  )),
+                  ?
+           FROM aggregate
+           CROSS JOIN latest
+           WHERE ${receiptGuard}
+           ON CONFLICT(user_id, topic_id) DO UPDATE SET
+             mastery_score = excluded.mastery_score,
+             confidence = excluded.confidence,
+             attempts_count = excluded.attempts_count,
+             last_practiced_at = excluded.last_practiced_at,
+             next_review_at = excluded.next_review_at,
+             updated_at = excluded.updated_at`
+        )
+        .bind(
+          input.userId,
+          ...topicQuestionIds,
+          input.userId,
+          input.masteryContext.topicId,
+          input.receiptCreatedAt,
+          input.userId,
+          input.operationKey,
+          input.attemptId,
+          input.requestHash
+        )
+    );
+
+    statements.push(
+      this.db
+        .prepare(
+          `UPDATE mutation_receipts
+           SET response_json = (
+             SELECT json_object(
+               'attempt', json_object(
+                 'id', attempts.id,
+                 'userId', attempts.user_id,
+                 'questionId', attempts.question_id,
+                 'questionVersion', attempts.question_version,
+                 'mode', attempts.mode,
+                 'status', attempts.status,
+                 'startedAt', attempts.started_at,
+                 'completedAt', attempts.completed_at,
+                 'durationSeconds', attempts.duration_seconds,
+                 'selfScore', attempts.self_score,
+                 'rubricScores', json(COALESCE((
+                   SELECT json_group_object(dimension, score)
+                   FROM attempt_rubric_scores
+                   WHERE attempt_id = attempts.id
+                 ), '{}'))
+               ),
+               'mastery', json_object(
+                 'userId', mastery.user_id,
+                 'topicId', mastery.topic_id,
+                 'masteryScore', mastery.mastery_score,
+                 'confidence', mastery.confidence,
+                 'attemptsCount', mastery.attempts_count,
+                 'lastPracticedAt', mastery.last_practiced_at,
+                 'nextReviewAt', mastery.next_review_at
+               )
+             )
+             FROM practice_attempts attempts
+             INNER JOIN topic_mastery mastery
+               ON mastery.user_id = attempts.user_id AND mastery.topic_id = ?
+             WHERE attempts.id = ? AND attempts.user_id = ?
+           )
+           WHERE user_id = ? AND operation_key = ? AND attempt_id = ? AND request_hash = ?
+             AND ${receiptGuard}`
+        )
+        .bind(
+          input.masteryContext.topicId,
+          input.attemptId,
+          input.userId,
+          input.userId,
+          input.operationKey,
+          input.attemptId,
+          input.requestHash,
+          input.userId,
+          input.operationKey,
+          input.attemptId,
+          input.requestHash
+        )
+    );
+
+    try {
+      const results = await this.db.batch(statements);
+      const receiptCreated = results[0]?.meta.changes ?? 0;
+      const attemptCompleted = results[attemptStatementIndex]?.meta.changes ?? 0;
+      if (receiptCreated > 0 && attemptCompleted > 0) {
+        const receipt = await this.findCompletionReceipt(input.userId, input.operationKey);
+        if (receipt && receipt.requestHash === input.requestHash) {
+          return { outcome: "completed", response: receipt.response };
+        }
+      }
+    } catch (error) {
       const racedReceipt = await this.findCompletionReceipt(input.userId, input.operationKey);
       if (racedReceipt) {
         return racedReceipt.requestHash === input.requestHash

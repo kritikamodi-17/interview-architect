@@ -1,4 +1,4 @@
-import type { PracticeAttempt, TopicMastery } from "@interview-architect/domain";
+import { calculateMastery, nextReviewAt, type PracticeAttempt, type TopicMastery } from "@interview-architect/domain";
 import type {
   AttemptCompletionResponse,
   CompleteAttemptWithReceiptInput,
@@ -32,6 +32,7 @@ function copyCompletionResponse(response: AttemptCompletionResponse): AttemptCom
 interface CompletionReceipt {
   requestHash: string;
   response: AttemptCompletionResponse;
+  expiresAt: string;
 }
 
 /** A deterministic repository for API tests and local dependency injection. */
@@ -49,6 +50,13 @@ export class MemoryLearnerRepository implements LearnerRepository {
   }
 
   async purgeExpiredSessions(now: string): Promise<void> {
+    for (const [userId, receipts] of this.receipts) {
+      for (const [operationKey, receipt] of receipts) {
+        if (receipt.expiresAt <= now) receipts.delete(operationKey);
+      }
+      if (receipts.size === 0) this.receipts.delete(userId);
+    }
+
     for (const [tokenHash, session] of this.sessions) {
       if (session.expiresAt <= now) this.sessions.delete(tokenHash);
     }
@@ -180,22 +188,51 @@ export class MemoryLearnerRepository implements LearnerRepository {
     };
     this.attempts.set(input.attemptId, updated);
 
-    if (input.response.mastery) {
+    const mastery = input.masteryContext
+      ? this.calculateTopicMastery(input.userId, input.masteryContext.topicId, input.masteryContext.questionIds)
+      : input.response.mastery;
+    if (mastery) {
       this.mastery.set(
-        `${input.userId}:${input.response.mastery.topicId}`,
-        copyMastery(input.response.mastery)
+        `${input.userId}:${mastery.topicId}`,
+        copyMastery(mastery)
       );
     }
 
     const response = copyCompletionResponse({
       ...input.response,
-      attempt: updated
+      attempt: updated,
+      ...(mastery ? { mastery } : {})
     });
     const nextReceipts = receiptsForUser ?? new Map<string, CompletionReceipt>();
-    nextReceipts.set(input.operationKey, { requestHash: input.requestHash, response });
+    nextReceipts.set(input.operationKey, {
+      requestHash: input.requestHash,
+      response,
+      expiresAt: input.receiptExpiresAt
+    });
     this.receipts.set(input.userId, nextReceipts);
 
     return { outcome: "completed", response: copyCompletionResponse(response) };
+  }
+
+  private calculateTopicMastery(userId: string, topicId: string, questionIds: string[]): TopicMastery | undefined {
+    const relevantQuestionIds = new Set(questionIds);
+    const completed = [...this.attempts.values()]
+      .filter((attempt) => attempt.userId === userId)
+      .filter((attempt) => relevantQuestionIds.has(attempt.questionId))
+      .filter((attempt) => attempt.status === "completed" && typeof attempt.selfScore === "number" && Boolean(attempt.completedAt))
+      .sort((left, right) => `${left.completedAt ?? ""}:${left.startedAt}:${left.id}`.localeCompare(`${right.completedAt ?? ""}:${right.startedAt}:${right.id}`));
+    const latest = completed.at(-1);
+    if (!latest || latest.selfScore === undefined || !latest.completedAt) return undefined;
+
+    return {
+      userId,
+      topicId,
+      masteryScore: calculateMastery(completed),
+      confidence: latest.selfScore,
+      attemptsCount: completed.length,
+      lastPracticedAt: latest.completedAt,
+      nextReviewAt: nextReviewAt(latest.selfScore, new Date(latest.completedAt))
+    };
   }
 
   async listBookmarks(userId: string): Promise<string[]> {

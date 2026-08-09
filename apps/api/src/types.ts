@@ -68,6 +68,12 @@ export interface AttemptCompletionResponse {
   mastery?: TopicMastery;
 }
 
+/** Static catalog identifiers used to recalculate one topic inside the completion transaction. */
+export interface CompletionMasteryContext {
+  topicId: string;
+  questionIds: string[];
+}
+
 /**
  * A completion is keyed by a client-generated operation ID. The request hash
  * binds that key to the exact normalized payload so a changed retry is safe to
@@ -80,6 +86,8 @@ export interface CompleteAttemptWithReceiptInput {
   operationKey: string;
   requestHash: string;
   response?: AttemptCompletionResponse;
+  /** When supplied, the repository derives mastery from transaction-visible attempts. */
+  masteryContext?: CompletionMasteryContext;
   receiptCreatedAt: string;
   receiptExpiresAt: string;
 }

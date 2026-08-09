@@ -1,6 +1,4 @@
 import {
-  calculateMastery,
-  nextReviewAt,
   recommendNextQuestion,
   type CoachRequest,
   type InterviewQuestion,
@@ -78,6 +76,13 @@ const attemptPatchSchema = z
         code: "custom",
         path: ["selfScore"],
         message: "A completed attempt requires a selfScore from 0 to 4."
+      });
+    }
+    if (value.status === "completed" && value.rubricScores === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["rubricScores"],
+        message: "A completed attempt requires a score for every rubric dimension."
       });
     }
     if (value.status === "abandoned" && (value.selfScore !== undefined || value.rubricScores !== undefined)) {
@@ -177,6 +182,12 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
   const sessionCreationRateLimiter = dependencies.sessionCreationRateLimiter ?? new FixedWindowRateLimiter();
   const questions = normaliseQuestions(dependencies.questions);
   const questionsById = new Map(questions.map((question) => [question.id, question]));
+  const questionIdsByTopic = new Map<string, string[]>();
+  for (const question of questions) {
+    const ids = questionIdsByTopic.get(question.primaryTopicId) ?? [];
+    ids.push(question.id);
+    questionIdsByTopic.set(question.primaryTopicId, ids);
+  }
 
   const app = new Hono<ApiEnv>();
   const setSessionCookie = (c: ApiContext, token: string) => {
@@ -406,16 +417,19 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
       if (!question) {
         return errorResponse(c, 409, "question_unavailable", "This question is no longer available for scoring.");
       }
-      if (parsed.data.rubricScores) {
-        const validDimensions = new Set(question.rubric.map((item) => item.dimension));
-        const invalidDimension = Object.keys(parsed.data.rubricScores).find(
-          (dimension) => !validDimensions.has(dimension)
-        );
-        if (invalidDimension) {
-          return errorResponse(c, 422, "validation_error", "A rubric score does not match this question.", {
-            dimension: invalidDimension
-          });
-        }
+      const rubricScores = parsed.data.rubricScores;
+      if (!rubricScores) {
+        return errorResponse(c, 422, "validation_error", "A completed attempt requires a score for every rubric dimension.");
+      }
+      const validDimensions = new Set(question.rubric.map((item) => item.dimension));
+      const suppliedDimensions = Object.keys(rubricScores);
+      const invalidDimension = suppliedDimensions.find((dimension) => !validDimensions.has(dimension));
+      const missingDimension = question.rubric.find((item) => rubricScores[item.dimension] === undefined)?.dimension;
+      if (invalidDimension || missingDimension || suppliedDimensions.length !== validDimensions.size) {
+        return errorResponse(c, 422, "validation_error", "Complete every rubric dimension for this question.", {
+          ...(invalidDimension ? { invalidDimension } : {}),
+          ...(missingDimension ? { missingDimension } : {})
+        });
       }
 
       const completedAttempt: PracticeAttempt = {
@@ -426,16 +440,8 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
         selfScore: update.selfScore,
         ...(update.rubricScores === undefined ? {} : { rubricScores: update.rubricScores })
       };
-      const mastery = await calculateTopicMasteryAfterCompletion({
-        repository,
-        userId,
-        topicId: question.primaryTopicId,
-        questionsById,
-        completedAttempt
-      });
       const response: AttemptCompletionResponse = {
-        attempt: completedAttempt,
-        ...(mastery ? { mastery } : {})
+        attempt: completedAttempt
       };
       return completionResultResponse(
         c,
@@ -446,6 +452,10 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
           operationKey: idempotencyKey.data,
           requestHash,
           response,
+          masteryContext: {
+            topicId: question.primaryTopicId,
+            questionIds: questionIdsByTopic.get(question.primaryTopicId) ?? [question.id]
+          },
           receiptCreatedAt: completedAt.toISOString(),
           receiptExpiresAt: new Date(completedAt.getTime() + ttlSeconds * 1_000).toISOString()
         })
@@ -525,32 +535,4 @@ export function createApp(dependencies: AppDependencies): Hono<ApiEnv> {
     errorResponse(c, 500, "internal_error", "The study service could not complete that request.")
   );
   return app;
-}
-
-async function calculateTopicMasteryAfterCompletion(input: {
-  repository: LearnerRepository;
-  userId: string;
-  topicId: string;
-  questionsById: ReadonlyMap<string, InterviewQuestion>;
-  completedAttempt: PracticeAttempt;
-}): Promise<TopicMastery | undefined> {
-  const relevantCompleted = (await input.repository.listAttempts(input.userId))
-    .filter((attempt) => attempt.id !== input.completedAttempt.id)
-    .filter((attempt) => input.questionsById.get(attempt.questionId)?.primaryTopicId === input.topicId)
-    .filter((attempt) => attempt.status === "completed" && typeof attempt.selfScore === "number")
-    .concat(input.completedAttempt)
-    .sort((left, right) => left.completedAt?.localeCompare(right.completedAt ?? "") ?? 0);
-  const latest = relevantCompleted.at(-1);
-  if (!latest || latest.selfScore === undefined || !latest.completedAt) return undefined;
-
-  const mastery: TopicMastery = {
-    userId: input.userId,
-    topicId: input.topicId,
-    masteryScore: calculateMastery(relevantCompleted),
-    confidence: latest.selfScore,
-    attemptsCount: relevantCompleted.length,
-    lastPracticedAt: latest.completedAt,
-    nextReviewAt: nextReviewAt(latest.selfScore, new Date(latest.completedAt))
-  };
-  return mastery;
 }
