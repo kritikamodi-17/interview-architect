@@ -1,0 +1,23 @@
+{
+  "name": "@interview-architect/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config ../../infra/wrangler.jsonc --port 8787",
+    "db:migrate:local": "wrangler d1 migrations apply interview-architect --local --config ../../infra/wrangler.jsonc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@interview-architect/content": "*",
+    "@interview-architect/domain": "*",
+    "hono": "^4.8.5",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250808.0",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.32.0"
+  }
+}

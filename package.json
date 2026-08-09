@@ -1,0 +1,29 @@
+{
+  "name": "interview-architect",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A full-stack, free-to-host system-design interview practice platform.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run db:migrate:local && concurrently -n web,api -c cyan,magenta \"npm run dev --workspace @interview-architect/web\" \"npm run dev --workspace @interview-architect/api\"",
+    "db:migrate:local": "npm run db:migrate:local --workspace @interview-architect/api",
+    "build": "npm run validate --workspace @interview-architect/content && npm run build --workspace @interview-architect/web && npm run typecheck --workspace @interview-architect/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "playwright test",
+    "content:validate": "npm run validate --workspace @interview-architect/content",
+    "preview": "npm run preview --workspace @interview-architect/web"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  }
+}
