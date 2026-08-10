@@ -37,6 +37,11 @@ export interface CompletionAttemptResult {
   pendingSync: boolean;
 }
 
+export interface AbandonAttemptResult {
+  /** True only after the study service has confirmed the terminal update. */
+  confirmed: boolean;
+}
+
 interface LearnerContextValue extends LearnerSnapshot {
   syncStatus: SyncStatus;
   syncMessage?: string;
@@ -50,7 +55,7 @@ interface LearnerContextValue extends LearnerSnapshot {
     input: CompletionInput,
     idempotencyKey?: string
   ) => Promise<CompletionAttemptResult>;
-  abandonAttempt: (attempt: PracticeAttempt, durationSeconds: number) => Promise<void>;
+  abandonAttempt: (attempt: PracticeAttempt, durationSeconds: number) => Promise<AbandonAttemptResult>;
   toggleBookmark: (questionId: string) => Promise<void>;
   refreshProgress: () => Promise<void>;
   eraseStudyData: () => Promise<EraseStudyDataResult>;
@@ -391,7 +396,7 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
   );
 
   const abandonAttempt = useCallback(
-    async (attempt: PracticeAttempt, durationSeconds: number) => {
+    async (attempt: PracticeAttempt, durationSeconds: number): Promise<AbandonAttemptResult> => {
       const requestEpoch = snapshotEpochRef.current;
       const abandoned: PracticeAttempt = { ...attempt, status: "abandoned", durationSeconds };
       updateSnapshot((current) => ({
@@ -399,15 +404,25 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
         attempts: current.attempts.map((item) => (item.id === attempt.id ? abandoned : item))
       }));
 
-      if (attempt.id.startsWith("local-")) return;
+      if (attempt.id.startsWith("local-")) return { confirmed: true };
       try {
         await api.completeAttempt(attempt.id, { status: "abandoned", durationSeconds });
         if (requestEpoch === snapshotEpochRef.current) markOnline();
+        return { confirmed: true };
       } catch (error) {
-        if (requestEpoch !== snapshotEpochRef.current) return;
+        if (requestEpoch !== snapshotEpochRef.current) return { confirmed: false };
         if (isTransportError(error)) {
+          // A missing response cannot prove that the server applied the
+          // discard. Restore the active attempt so a later progress refresh
+          // can reconcile it instead of hiding an unresolved server session.
+          updateSnapshot((current) => ({
+            ...current,
+            attempts: current.attempts.map((item) => (
+              item.id === attempt.id && item.status === "abandoned" ? attempt : item
+            ))
+          }));
           markSaveFailure(error, "You are offline. This discarded attempt is saved on this device.");
-          return;
+          return { confirmed: false };
         }
 
         updateSnapshot((current) => ({

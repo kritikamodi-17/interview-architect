@@ -15,6 +15,14 @@ describe("practice launch routes", () => {
     expect(url.searchParams.get("from")).toBe("/questions?q=cache+stampede&status=fresh");
   });
 
+  it("pins a saved review link to its completed attempt", () => {
+    const href = practicePath("prevent-cache-stampede", "mock", undefined, "attempt-42");
+    const url = new URL(href, "https://interview-architect.local");
+
+    expect(url.searchParams.get("mode")).toBe("mock");
+    expect(url.searchParams.get("attempt")).toBe("attempt-42");
+  });
+
   it("allows only a local question-bank route as a Studio return target", () => {
     expect(questionBankReturnPath("/questions?q=redis&status=fresh")).toBe("/questions?q=redis&status=fresh");
     expect(questionBankReturnPath("https://outside.example/questions")).toBe("/questions");

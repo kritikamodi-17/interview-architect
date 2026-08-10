@@ -53,6 +53,7 @@ interface StructuredWorkspaceProps {
   sections: WorkspaceSections;
   saveState: LocalSaveState;
   onChange: (section: WorkspaceSectionId, value: string) => void;
+  readOnly?: boolean;
 }
 
 function saveMessage(saveState: LocalSaveState): string {
@@ -62,7 +63,7 @@ function saveMessage(saveState: LocalSaveState): string {
   return "Your notes stay only in this browser";
 }
 
-export function StructuredWorkspace({ sections, saveState, onChange }: StructuredWorkspaceProps): React.JSX.Element {
+export function StructuredWorkspace({ sections, saveState, onChange, readOnly = false }: StructuredWorkspaceProps): React.JSX.Element {
   const completed = WORKSPACE_SECTION_IDS.filter((section) => sections[section].trim()).length;
   return (
     <section className="structured-workspace" aria-labelledby="workspace-title">
@@ -91,8 +92,9 @@ export function StructuredWorkspace({ sections, saveState, onChange }: Structure
                 onChange={(event) => onChange(section, event.target.value)}
                 placeholder={detail.placeholder}
                 aria-describedby={`${id}-hint`}
+                readOnly={readOnly}
               />
-              <span className="sr-only" id={`${id}-hint`}>Saved only in this browser.</span>
+              <span className="sr-only" id={`${id}-hint`}>{readOnly ? "This saved review is read-only and remains only in this browser." : "Saved only in this browser."}</span>
             </section>
           );
         })}

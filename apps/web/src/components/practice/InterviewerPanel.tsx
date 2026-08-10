@@ -7,6 +7,7 @@ interface InterviewerPanelProps {
   probes: PracticeProbeResponse[];
   mode: PracticeMode;
   canAskNext: boolean;
+  readOnly?: boolean;
   onRevealProbe: () => void;
   onResponseChange: (index: number, response: string) => void;
 }
@@ -16,6 +17,7 @@ export function InterviewerPanel({
   probes,
   mode,
   canAskNext,
+  readOnly = false,
   onRevealProbe,
   onResponseChange
 }: InterviewerPanelProps): React.JSX.Element | null {
@@ -39,11 +41,11 @@ export function InterviewerPanel({
           <div>
             <strong>{prompt}</strong>
             <label htmlFor={id}>Your response <span>private</span></label>
-            <textarea id={id} value={probe.response} onChange={(event) => onResponseChange(probe.index, event.target.value)} placeholder="Talk through the decision, impact, and fallback…" />
+            <textarea id={id} value={probe.response} onChange={(event) => onResponseChange(probe.index, event.target.value)} placeholder="Talk through the decision, impact, and fallback…" readOnly={readOnly} />
           </div>
         </li>;
       })}</ol> : <p className="interviewer-panel__empty">No follow-up has been asked yet. Start with your core design, then invite an interviewer probe.</p>}
-      {probes.length < followUps.length ? <div className="interviewer-panel__action"><button className="button button--secondary" type="button" onClick={onRevealProbe} disabled={!canAskNext}><Icon name="arrow-right" size={16} />Ask follow-up {probes.length + 1} of {followUps.length}</button>{mode === "mock" && !canAskNext ? <p>Finish your current answer before asking the interviewer to move on.</p> : null}</div> : <p className="interviewer-panel__complete"><Icon name="check" size={15} />You worked through every prepared follow-up.</p>}
+      {readOnly ? <p className="interviewer-panel__complete"><Icon name="check" size={15} />Saved interviewer responses are available for review.</p> : probes.length < followUps.length ? <div className="interviewer-panel__action"><button className="button button--secondary" type="button" onClick={onRevealProbe} disabled={!canAskNext}><Icon name="arrow-right" size={16} />Ask follow-up {probes.length + 1} of {followUps.length}</button>{mode === "mock" && !canAskNext ? <p>Finish your current answer before asking the interviewer to move on.</p> : null}</div> : <p className="interviewer-panel__complete"><Icon name="check" size={15} />You worked through every prepared follow-up.</p>}
     </section>
   );
 }

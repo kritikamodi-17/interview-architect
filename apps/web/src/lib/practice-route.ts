@@ -7,9 +7,10 @@ export function practiceModeLabel(mode: PracticeMode): "Learn" | "Mock" {
 }
 
 /** Build a Studio URL without mutating the question-bank's URL-backed filters. */
-export function practicePath(slug: string, mode: PracticeMode, returnTo?: string): string {
+export function practicePath(slug: string, mode: PracticeMode, returnTo?: string, attemptId?: string): string {
   const params = new URLSearchParams({ mode });
   if (returnTo) params.set("from", returnTo);
+  if (attemptId) params.set("attempt", attemptId);
   return `/questions/${encodeURIComponent(slug)}?${params.toString()}`;
 }
 

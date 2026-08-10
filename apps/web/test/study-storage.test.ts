@@ -181,6 +181,22 @@ describe("Design Studio private storage", () => {
     expect(storage.keys()).toEqual(["interview-architect:studio:v1:attempt:attempt-promoted"]);
   });
 
+  it("does not attach a new staging draft to a completed review without its canonical artifact", () => {
+    const storage = new MemoryStorage();
+    const staged = createPracticeArtifact({ questionId: "redis-cache-aside", questionVersion: 1, mode: "learn" });
+    staged.sections.architecture = "This belongs to a new draft, not an old review.";
+    expect(savePracticeArtifact(staged, storage)).toEqual({ ok: true, value: undefined });
+    storage.setItem("interview-architect:draft:redis-cache-aside", "legacy draft");
+
+    expect(loadPracticeArtifact({
+      questionId: "redis-cache-aside",
+      questionVersion: 1,
+      mode: "learn",
+      attemptId: "completed-attempt"
+    }, storage, { allowDraftPromotion: false })).toEqual({ ok: true, value: undefined });
+    expect(storage.keys()).toHaveLength(2);
+  });
+
   it("removes both an attempt artifact and its matching pre-start draft when discarding", () => {
     const storage = new MemoryStorage();
     const staged = createPracticeArtifact({ questionId: "redis-cache-aside", questionVersion: 1, mode: "learn" });

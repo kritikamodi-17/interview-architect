@@ -147,6 +147,66 @@ test("Learn autosaves workspace and probe responses across reload while keyboard
   await expect(page.locator(".hint-list li")).toHaveCount(1);
 });
 
+test("completed private notes reopen on reload and from their recent-attempt link", async ({ page }) => {
+  await startStudioSession(page, "learn");
+  const draft = "Use a single-flight lease with a bounded stale response and fencing tokens for refresh ownership.";
+  const probeResponse = "A versioned lease token prevents an old refresher from overwriting the current value.";
+
+  await page.getByLabel("Architecture").fill(draft);
+  await page.getByRole("button", { name: "Ask follow-up 1 of 2" }).click();
+  await page.locator("#probe-response-0").fill(probeResponse);
+  await expect(page.locator(".workspace-save-state")).toContainText("Saved privately on this device", { timeout: 10_000 });
+
+  await page.getByRole("button", { name: /reveal answer & rubric/i }).click();
+  await scoreCacheStampede(page);
+  await page.getByRole("button", { name: /complete session & update progress/i }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Review saved—nice work." })).toBeVisible();
+
+  await page.reload();
+  await waitForSync(page);
+  await expect(page.getByLabel("Architecture")).toHaveValue(draft);
+  await expect(page.locator("#probe-response-0")).toHaveValue(probeResponse);
+  await expect(page.getByLabel("Architecture")).toHaveAttribute("readonly", "");
+  await expect(page.getByRole("heading", { name: "Your next improvement is visible now" })).toBeVisible();
+
+  await page.getByRole("link", { name: "My progress" }).first().click();
+  const recentAttempt = page.locator(".attempt-table__row").filter({ hasText: cacheStampedeTitle });
+  await expect(recentAttempt).toBeVisible();
+  await recentAttempt.click();
+  await expect(page).toHaveURL(/\/questions\/prevent-cache-stampede-on-expensive-profile\?mode=learn&attempt=/);
+  await expect(page.getByLabel("Architecture")).toHaveValue(draft);
+  await expect(page.locator("#probe-response-0")).toHaveValue(probeResponse);
+});
+
+test("retains private notes when the discard request cannot be confirmed", async ({ page }) => {
+  await startStudioSession(page, "learn");
+  const draft = "Keep this private design note until the discard result is confirmed.";
+  await page.getByLabel("Architecture").fill(draft);
+  await expect(page.locator(".workspace-save-state")).toContainText("Saved privately on this device", { timeout: 10_000 });
+
+  await page.route("**/api/v1/attempts/*", async (route) => {
+    if (route.request().method() === "PATCH") {
+      await route.abort("connectionreset");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("button", { name: "Discard session", exact: true }).click();
+  await page.getByRole("button", { name: "Yes, discard session", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("We could not confirm the discard");
+  await expect(page.getByLabel("Architecture")).toHaveValue(draft);
+  await expect(page.getByRole("button", { name: "Discard session", exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => Object.keys(window.localStorage)
+    .some((key) => key.startsWith("interview-architect:studio:v1:attempt:")))).toBe(true);
+
+  await page.unroute("**/api/v1/attempts/*");
+  await page.reload();
+  await waitForSync(page);
+  await expect(page.getByLabel("Architecture")).toHaveValue(draft);
+  await expect(page.getByRole("button", { name: "Discard session", exact: true })).toBeVisible();
+});
+
 test("Mock keeps coaching hidden, gates interviewer probes, and unlocks feedback only after completion", async ({ page }) => {
   await startStudioSession(page, "mock");
 
@@ -212,4 +272,17 @@ test("the mobile Studio remains usable without horizontal overflow", async ({ pa
   await page.getByRole("button", { name: "Ask follow-up 1 of 2" }).click();
   await expect(page.locator("#probe-response-0")).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Studio root honors reduced-motion preferences", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(`${cacheStampedePath}?mode=learn`);
+  const studio = page.locator(".design-studio");
+  await expect(studio).toBeVisible();
+  const animationDurationMs = await studio.evaluate((element) => {
+    const duration = window.getComputedStyle(element).animationDuration;
+    const value = Number.parseFloat(duration);
+    return duration.endsWith("ms") ? value : value * 1_000;
+  });
+  expect(animationDurationMs).toBeLessThanOrEqual(0.01);
 });

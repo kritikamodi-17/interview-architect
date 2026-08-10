@@ -30,6 +30,43 @@ function activeAttemptFor(questionId: string, attempts: PracticeAttempt[]): Prac
     .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
 }
 
+interface CompletedArtifactSession {
+  attempt: PracticeAttempt;
+  artifact: PracticeArtifactV1;
+}
+
+/**
+ * Completed notes are intentionally retained locally. Reopen only an
+ * attempt-keyed canonical artifact: a current staging draft or legacy draft
+ * must never be attached to a historical completed review.
+ */
+function completedArtifactSessionFor(
+  question: InterviewQuestion,
+  attempts: PracticeAttempt[],
+  requestedAttemptId?: string
+): CompletedArtifactSession | undefined {
+  const candidates = attempts
+    .filter((attempt) => attempt.questionId === question.id && attempt.status === "completed")
+    .filter((attempt) => !requestedAttemptId || attempt.id === requestedAttemptId)
+    .sort((left, right) => new Date(right.completedAt ?? right.startedAt).getTime() - new Date(left.completedAt ?? left.startedAt).getTime());
+
+  for (const candidate of candidates) {
+    const loaded = loadPracticeArtifact(
+      {
+        questionId: question.id,
+        questionVersion: question.version,
+        mode: candidate.mode,
+        attemptId: candidate.id
+      },
+      undefined,
+      { allowDraftPromotion: false }
+    );
+    if (loaded.ok && loaded.value) return { attempt: candidate, artifact: loaded.value };
+  }
+
+  return undefined;
+}
+
 function elapsedSince(startedAt: string): number {
   const timestamp = new Date(startedAt).getTime();
   return Number.isFinite(timestamp) ? Math.max(0, Math.floor((Date.now() - timestamp) / 1_000)) : 0;
@@ -143,7 +180,8 @@ export interface UsePracticeSessionResult {
  */
 export function usePracticeSession(
   question: InterviewQuestion,
-  requestedMode: PracticeMode
+  requestedMode: PracticeMode,
+  requestedReviewAttemptId?: string
 ): UsePracticeSessionResult {
   const {
     attempts,
@@ -155,23 +193,31 @@ export function usePracticeSession(
     toggleBookmark: toggleLearnerBookmark
   } = useLearner();
   const initialActive = activeAttemptFor(question.id, attempts);
-  const [attempt, setAttempt] = useState<PracticeAttempt | null>(initialActive ?? null);
+  const [initialCompleted] = useState<CompletedArtifactSession | undefined>(() => (
+    initialActive ? undefined : completedArtifactSessionFor(question, attempts, requestedReviewAttemptId)
+  ));
+  const initialAttempt = initialActive ?? initialCompleted?.attempt ?? null;
+  const [attempt, setAttempt] = useState<PracticeAttempt | null>(initialAttempt);
   const mode = attempt?.mode ?? requestedMode;
-  const [artifact, setArtifact] = useState<PracticeArtifactV1>(() => createPracticeArtifact({
+  const [artifact, setArtifact] = useState<PracticeArtifactV1>(() => initialCompleted?.artifact ?? createPracticeArtifact({
     questionId: question.id,
     questionVersion: question.version,
-    mode: initialActive?.mode ?? requestedMode,
-    attemptId: initialActive?.id
+    mode: initialAttempt?.mode ?? requestedMode,
+    attemptId: initialAttempt?.id
   }));
-  const [elapsedSeconds, setElapsedSeconds] = useState(() => initialActive ? elapsedSince(initialActive.startedAt) : 0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(() => initialAttempt
+    ? initialAttempt.status === "completed"
+      ? initialAttempt.durationSeconds ?? elapsedSince(initialAttempt.startedAt)
+      : elapsedSince(initialAttempt.startedAt)
+    : 0);
   const [isRunning, setIsRunning] = useState(Boolean(initialActive));
   const [isStarting, setIsStarting] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
-  const [saveState, setSaveState] = useState<LocalSaveState>("idle");
-  const [rubricScores, setRubricScores] = useState<Record<string, number>>({});
-  const [selfScore, setSelfScore] = useState<number | null>(null);
-  const [isReviewOpen, setIsReviewOpen] = useState(false);
-  const [isCompleted, setIsCompleted] = useState(false);
+  const [saveState, setSaveState] = useState<LocalSaveState>(initialCompleted ? "saved" : "idle");
+  const [rubricScores, setRubricScores] = useState<Record<string, number>>(initialCompleted?.attempt.rubricScores ?? {});
+  const [selfScore, setSelfScore] = useState<number | null>(initialCompleted?.attempt.selfScore ?? null);
+  const [isReviewOpen, setIsReviewOpen] = useState(Boolean(initialCompleted));
+  const [isCompleted, setIsCompleted] = useState(Boolean(initialCompleted));
   const [isAwaitingRetry, setIsAwaitingRetry] = useState(false);
   const [isAbandonConfirmationOpen, setIsAbandonConfirmationOpen] = useState(false);
   const [error, setError] = useState<string>();
@@ -185,7 +231,7 @@ export function usePracticeSession(
 
   const activeFromSnapshot = activeAttemptFor(question.id, attempts);
   const artifactScope = `${question.id}:${question.version}:${mode}:${attempt?.id ?? "staging"}`;
-  const modeMismatch = Boolean(activeFromSnapshot && activeFromSnapshot.mode !== requestedMode);
+  const modeMismatch = Boolean(attempt && attempt.mode !== requestedMode);
   const missingDimensions = question.rubric
     .filter((dimension) => rubricScores[rubricKey(dimension)] === undefined)
     .map((dimension) => dimension.dimension);
@@ -207,6 +253,29 @@ export function usePracticeSession(
     setIsRunning(true);
     setError(undefined);
   }, [activeFromSnapshot, attempt?.id, isCompleted]);
+
+  // A finished attempt does not need an active server lifecycle, but its
+  // canonical local artifact remains valuable for personal review. Restore it
+  // after a normal reload or an explicit recent-attempt link.
+  useEffect(() => {
+    if (activeFromSnapshot || attempt?.status === "in_progress" || attempt?.status === "completed") return;
+    const recovered = completedArtifactSessionFor(question, attempts, requestedReviewAttemptId);
+    if (!recovered) return;
+
+    saveEpochRef.current += 1;
+    setAttempt(recovered.attempt);
+    setArtifact(recovered.artifact);
+    setElapsedSeconds(recovered.attempt.durationSeconds ?? elapsedSince(recovered.attempt.startedAt));
+    setIsRunning(false);
+    setIsReviewOpen(true);
+    setIsCompleted(true);
+    setIsAwaitingRetry(false);
+    setIsAbandonConfirmationOpen(false);
+    setRubricScores(recovered.attempt.rubricScores ?? {});
+    setSelfScore(recovered.attempt.selfScore ?? null);
+    setSaveState("saved");
+    setError(undefined);
+  }, [activeFromSnapshot, attempt?.status, attempts, question, requestedReviewAttemptId]);
 
   useEffect(() => {
     if (previousQuestionIdRef.current === question.id) return;
@@ -379,6 +448,7 @@ export function usePracticeSession(
   }, [isCompleted, mode, updateArtifact]);
 
   const revealProbe = useCallback(() => {
+    if (isCompleted) return;
     const nextIndex = artifact.probes.length;
     if (nextIndex >= question.prompt.followUps.length) return;
     const latest = artifact.probes[nextIndex - 1];
@@ -391,18 +461,28 @@ export function usePracticeSession(
       ...current,
       probes: [...current.probes, { index: nextIndex, response: "", revealedAt: new Date().toISOString() }]
     }));
-  }, [artifact.probes, mode, question.prompt.followUps.length, updateArtifact]);
+  }, [artifact.probes, isCompleted, mode, question.prompt.followUps.length, updateArtifact]);
 
   const updateProbeResponse = useCallback((index: number, response: string) => {
+    if (isCompleted) return;
     updateArtifact((current) => ({
       ...current,
       probes: current.probes.map((probe) => probe.index === index ? { ...probe, response } : probe)
     }));
-  }, [updateArtifact]);
+  }, [isCompleted, updateArtifact]);
 
   const updateSection = useCallback((section: WorkspaceSectionId, value: string) => {
+    if (isCompleted) return;
     updateArtifact((current) => ({ ...current, sections: { ...current.sections, [section]: value } }));
-  }, [updateArtifact]);
+  }, [isCompleted, updateArtifact]);
+
+  const setRubricScore = useCallback((dimension: string, score: number) => {
+    if (!isCompleted) setRubricScores((current) => ({ ...current, [dimension]: score }));
+  }, [isCompleted]);
+
+  const setSessionSelfScore = useCallback((score: number) => {
+    if (!isCompleted) setSelfScore(score);
+  }, [isCompleted]);
 
   const openReview = useCallback(() => {
     if (!attempt) {
@@ -415,6 +495,7 @@ export function usePracticeSession(
   }, [attempt]);
 
   const submitCompletion = useCallback(async (retryOnly: boolean) => {
+    if (isCompleted && (!retryOnly || !isAwaitingRetry)) return;
     const workingAttempt = attempt;
     if (!workingAttempt) {
       setError("Start the session before you complete the review.");
@@ -492,7 +573,7 @@ export function usePracticeSession(
     } finally {
       setIsCompleting(false);
     }
-  }, [attempt, completeAttempt, elapsedSeconds, missingDimensions, rubricScores, selfScore, syncStatus]);
+  }, [attempt, completeAttempt, elapsedSeconds, isAwaitingRetry, isCompleted, missingDimensions, rubricScores, selfScore, syncStatus]);
 
   const complete = useCallback(async () => submitCompletion(false), [submitCompletion]);
   const retryCompletion = useCallback(async () => submitCompletion(true), [submitCompletion]);
@@ -507,7 +588,12 @@ export function usePracticeSession(
     if (!attempt || attempt.status !== "in_progress") return;
     setError(undefined);
     try {
-      await abandonAttempt(attempt, elapsedSeconds);
+      const result = await abandonAttempt(attempt, elapsedSeconds);
+      if (!result.confirmed) {
+        setIsAbandonConfirmationOpen(false);
+        setError("We could not confirm the discard. Your private notes are still available, so this session remains open. Try again after you reconnect.");
+        return;
+      }
       saveEpochRef.current += 1;
       void removePracticeArtifact({
         questionId: question.id,
@@ -586,8 +672,8 @@ export function usePracticeSession(
     revealProbe,
     updateProbeResponse,
     updateSection,
-    setRubricScore: (dimension, score) => setRubricScores((current) => ({ ...current, [dimension]: score })),
-    setSelfScore,
+    setRubricScore,
+    setSelfScore: setSessionSelfScore,
     openReview,
     complete,
     retryCompletion,

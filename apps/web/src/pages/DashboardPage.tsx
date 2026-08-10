@@ -266,11 +266,14 @@ export function DashboardPage() {
   const averageScore = completedAttempts.length
     ? (completedAttempts.reduce((sum, attempt) => sum + (attempt.selfScore ?? 0), 0) / completedAttempts.length).toFixed(1)
     : "—";
-  const recentQuestions = completedAttempts
+  const recentAttempts = completedAttempts
     .slice()
     .sort((left, right) => (right.completedAt ?? "").localeCompare(left.completedAt ?? ""))
-    .map((attempt) => catalogQuestions.find((question) => question.id === attempt.questionId))
-    .filter((question): question is InterviewQuestion => Boolean(question))
+    .map((attempt) => {
+      const question = catalogQuestions.find((item) => item.id === attempt.questionId);
+      return question ? { attempt, question } : undefined;
+    })
+    .filter((entry): entry is { attempt: PracticeAttempt; question: InterviewQuestion } => Boolean(entry))
     .slice(0, 3);
   const currentStreak = streakFromAttempts(attempts);
 
@@ -330,11 +333,10 @@ export function DashboardPage() {
       <section className="dashboard-bottom-grid">
         <section className="recent-card">
           <div className="section-heading section-heading--small"><div><p className="eyebrow">Practice history</p><h2>Recent reflections</h2></div><Link to="/progress" className="text-link">See progress <Icon name="arrow-right" size={14} /></Link></div>
-          {recentQuestions.length ? (
+          {recentAttempts.length ? (
             <ul className="recent-list">
-              {recentQuestions.map((question) => {
-                const record = completedAttempts.find((attempt) => attempt.questionId === question.id);
-                return <li key={question.id}><span className="recent-list__check"><Icon name="check" size={14} /></span><div><Link to={`/questions/${question.slug}`}>{question.title}</Link><small>{topicName(question.primaryTopicId)} · self-score {record?.selfScore ?? "—"}/4</small></div><Icon name="chevron-right" size={17} /></li>;
+              {recentAttempts.map(({ attempt, question }) => {
+                return <li key={attempt.id}><span className="recent-list__check"><Icon name="check" size={14} /></span><div><Link to={practicePath(question.slug, attempt.mode, undefined, attempt.id)}>{question.title}</Link><small>{topicName(question.primaryTopicId)} · self-score {attempt.selfScore ?? "—"}/4</small></div><Icon name="chevron-right" size={17} /></li>;
               })}
             </ul>
           ) : (

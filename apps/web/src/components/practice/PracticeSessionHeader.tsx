@@ -55,7 +55,7 @@ export function PracticeSessionHeader({
         </div>
         <button className={`bookmark-button bookmark-button--large${bookmarked ? " bookmark-button--saved" : ""}`} type="button" aria-label={bookmarked ? "Remove from saved prompts" : "Save this prompt"} aria-pressed={bookmarked} onClick={onToggleBookmark}><Icon name={bookmarked ? "bookmark-filled" : "bookmark"} size={20} /><span>{bookmarked ? "Saved" : "Save"}</span></button>
       </header>
-      {modeMismatch ? <p className="studio-resume-notice" role="status"><Icon name="info" size={16} />This prompt already has a {mode === "mock" ? "Mock" : "Learn"} session in progress. Its saved mode takes priority over the requested {requestedMode} link.</p> : null}
+      {modeMismatch ? <p className="studio-resume-notice" role="status"><Icon name="info" size={16} />This prompt is opening a saved {mode === "mock" ? "Mock" : "Learn"} {isCompleted ? "review" : "session"}. Its saved mode takes priority over the requested {requestedMode} link.</p> : null}
       <section className="studio-session-controls" aria-label="Session controls">
         <div>
           <span className="studio-session-controls__timer-label"><Icon name="clock" size={17} />Elapsed time</span>

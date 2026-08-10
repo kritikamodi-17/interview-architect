@@ -31,6 +31,7 @@ function PracticeStudio({ question }: { question: InterviewQuestion }): React.JS
   const [searchParams, setSearchParams] = useSearchParams();
   const rawMode = searchParams.get("mode");
   const requestedMode = normalizedMode(rawMode);
+  const requestedReviewAttemptId = searchParams.get("attempt") ?? undefined;
   const returnTo = questionBankReturnPath(searchParams.get("from"));
 
   useEffect(() => {
@@ -46,7 +47,7 @@ function PracticeStudio({ question }: { question: InterviewQuestion }): React.JS
     setSearchParams(next);
   };
 
-  const session = usePracticeSession(question, requestedMode);
+  const session = usePracticeSession(question, requestedMode, requestedReviewAttemptId);
   const sameModule = useMemo(() => catalogQuestions.filter((item) => item.moduleId === question.moduleId), [question.moduleId]);
   const position = sameModule.findIndex((item) => item.id === question.id);
   const nextQuestion = sameModule[(position + 1) % sameModule.length];
@@ -91,8 +92,8 @@ function PracticeStudio({ question }: { question: InterviewQuestion }): React.JS
           </section>
 
           {!session.attempt ? <SessionModePicker mode={requestedMode} onChange={setMode} onStart={() => void session.start()} isStarting={session.isStarting} disabled={session.syncStatus === "checking"} /> : <>
-            <StructuredWorkspace sections={session.artifact.sections} saveState={session.saveState} onChange={session.updateSection} />
-            <InterviewerPanel followUps={question.prompt.followUps} probes={session.artifact.probes} mode={session.mode} canAskNext={session.canRevealProbe} onRevealProbe={session.revealProbe} onResponseChange={session.updateProbeResponse} />
+            <StructuredWorkspace sections={session.artifact.sections} saveState={session.saveState} onChange={session.updateSection} readOnly={session.isCompleted} />
+            <InterviewerPanel followUps={question.prompt.followUps} probes={session.artifact.probes} mode={session.mode} canAskNext={session.canRevealProbe} readOnly={session.isCompleted} onRevealProbe={session.revealProbe} onResponseChange={session.updateProbeResponse} />
             <SessionFeedback
               question={question}
               mode={session.mode}

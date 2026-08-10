@@ -67,6 +67,15 @@ export interface ArtifactLocator {
   attemptId?: string;
 }
 
+/**
+ * Completed reviews must only reopen their own canonical artifact. A staging
+ * draft belongs to a new, not-yet-started session and must never be promoted
+ * into an older completed attempt just because both share a question.
+ */
+export interface LoadPracticeArtifactOptions {
+  allowDraftPromotion?: boolean;
+}
+
 export interface StorageLike {
   readonly length: number;
   key(index: number): string | null;
@@ -279,9 +288,14 @@ export function createPracticeArtifact(locator: ArtifactLocator): PracticeArtifa
  * A legacy free-text draft is migrated into the architecture section using the
  * same write-before-delete rule.
  */
-export function loadPracticeArtifact(locator: ArtifactLocator, override?: StorageLike): StorageResult<PracticeArtifactV1 | undefined> {
+export function loadPracticeArtifact(
+  locator: ArtifactLocator,
+  override?: StorageLike,
+  options: LoadPracticeArtifactOptions = {}
+): StorageResult<PracticeArtifactV1 | undefined> {
   const storage = browserStorage(override);
   if (!storage) return { ok: false, reason: "unavailable" };
+  const allowDraftPromotion = options.allowDraftPromotion ?? true;
 
   const stagingLocator: ArtifactLocator = { ...locator, attemptId: undefined };
   const canonicalKey = locator.attemptId ? attemptKey(locator.attemptId) : stagingKey(stagingLocator);
@@ -290,7 +304,7 @@ export function loadPracticeArtifact(locator: ArtifactLocator, override?: Storag
 
   let candidate = canonical.value;
   let candidateWasStaged = false;
-  if (!candidate && locator.attemptId) {
+  if (!candidate && locator.attemptId && allowDraftPromotion) {
     const staged = readArtifactAt(storage, stagingKey(stagingLocator), stagingLocator);
     if (!staged.ok) return staged;
     candidate = staged.value;
@@ -306,6 +320,8 @@ export function loadPracticeArtifact(locator: ArtifactLocator, override?: Storag
     }
     return { ok: true, value: normalized };
   }
+
+  if (!allowDraftPromotion) return { ok: true, value: undefined };
 
   const legacy = safeGet(storage, legacyDraftKey(locator.questionId));
   if (!legacy.ok) return legacy;

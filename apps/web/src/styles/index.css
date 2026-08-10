@@ -411,7 +411,7 @@ h1, h2, h3 { color: var(--ink); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .design-studio *, .design-studio *::before, .design-studio *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .design-studio, .design-studio *, .design-studio *::before, .design-studio *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
 /* Training loop entry points */
