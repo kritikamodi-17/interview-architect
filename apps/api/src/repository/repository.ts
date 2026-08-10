@@ -1,5 +1,7 @@
 import type { PracticeAttempt, TopicMastery } from "@interview-architect/domain";
 import type {
+  CompleteAttemptWithReceiptInput,
+  CompleteAttemptWithReceiptResult,
   AnonymousUser,
   CreateAttemptInput,
   SessionRecord,
@@ -44,6 +46,10 @@ export interface LearnerRepository {
     attemptId: string,
     input: UpdateAttemptInput
   ): Promise<PracticeAttempt | undefined>;
+  /** Completes an attempt and stores an immutable receipt for safe retries. */
+  completeAttemptWithReceipt(
+    input: CompleteAttemptWithReceiptInput
+  ): Promise<CompleteAttemptWithReceiptResult>;
 
   listBookmarks(userId: string): Promise<string[]>;
   setBookmark(
@@ -54,5 +60,4 @@ export interface LearnerRepository {
   ): Promise<void>;
 
   listMastery(userId: string): Promise<TopicMastery[]>;
-  upsertMastery(mastery: TopicMastery): Promise<void>;
 }

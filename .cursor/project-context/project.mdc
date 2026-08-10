@@ -1,0 +1,115 @@
+---
+description: Project identity, repositories, technology, verification, and delivery constraints for Interview Architect.
+globs:
+alwaysApply: false
+---
+
+# project.mdc — Interview Architect
+
+```yaml
+project:
+  name: interview-architect
+  displayName: Interview Architect
+  type: monolith
+
+repositories:
+  primary: kritikamodi-17/interview-architect
+  modifiable:
+    - kritikamodi-17/interview-architect
+  readOnly: []
+  involved:
+    - kritikamodi-17/interview-architect
+  localWorkspace: true
+
+technology:
+  languages:
+    - TypeScript
+    - SQL
+    - CSS
+  languageVersions:
+    node: ">=22.0.0"
+    typescript: "^5.8.3"
+  frameworks:
+    - React 19
+    - React Router 7
+    - Vite 7
+    - Hono 4
+    - Cloudflare Workers
+    - Cloudflare D1
+    - Zod 4
+    - Vitest 3
+    - Playwright 1
+  buildTool: npm-workspaces
+  testCommands:
+    fullSuite: npm run content:validate && npm run typecheck && npm test && npm run build && npm run test:e2e
+    singleClass: npx vitest run <test-file>
+  packageRoots:
+    - apps/web
+    - apps/api
+    - packages/content
+    - packages/domain
+    - infra
+    - tests/e2e
+  routeConfigPatterns:
+    - apps/web/src/App.tsx
+    - apps/api/src/app.ts
+    - infra/wrangler.jsonc
+
+bugbot:
+  enabled: false
+  repoUrl: https://github.com/kritikamodi-17/interview-architect
+  triggerOnDraftPr: false
+  triggerComment: /bugbot
+  botLogins: []
+  setupDoc: TBD
+
+jira:
+  enabled: false
+  baseUrl: TBD
+  projectKey: TBD
+  projectStyle: team-managed
+  issueTypes:
+    epic: Epic
+    story: Story
+    task: Task
+    subtask: Sub-task
+
+branching:
+  defaultBranch: main
+  mergeStrategy: merge
+  commitConvention: conventional
+
+dependencies:
+  internal:
+    - '@interview-architect/content'
+    - '@interview-architect/domain'
+  external:
+    - React 19
+    - Hono 4
+    - Cloudflare D1
+    - Zod 4
+    - Vite 7
+    - Vitest 3
+    - Playwright 1
+
+agentVerification:
+  runLocally: true
+  ciCommands:
+    compile: npm run build
+    unitTests: npm test
+  skipLocal: []
+  deferTo:
+    - GitHub Actions quality workflow after pull-request push
+    - Cloudflare production smoke check after authorized deployment
+
+constraints:
+  - Preserve the modular-monolith design; Redis and Kafka are curriculum content, not required runtime infrastructure.
+  - Keep anonymous cookie-backed learner identity and the privacy-first default unless the approved SDD explicitly changes it.
+  - Do not commit secrets, tokens, .dev.vars, or .env files.
+  - Use append-only D1 migrations in infra/migrations for persistent-schema changes.
+  - Update both D1Repository and MemoryRepository plus integration tests for repository-interface changes.
+  - Keep written answer drafts local by default; any server synchronization needs explicit privacy and deletion behavior.
+  - Validate new API input with Zod and use parameterized D1 statements only.
+  - Retain strict TypeScript and content validation gates.
+  - Do not edit reusable .cursor kit files; only .cursor/project-context is repository-specific.
+```

@@ -1,0 +1,87 @@
+---
+description: System architecture, boundaries, integrations, auth, and error handling for Interview Architect.
+globs:
+alwaysApply: false
+---
+
+# architecture.mdc — Interview Architect
+
+```yaml
+architecture:
+  summary: >-
+    Interview Architect is a free-first backend and system-design interview-practice application. A React single-page app serves a static, versioned curriculum and communicates on the same origin with a Hono API deployed as a Cloudflare Worker. The API stores anonymous learner progress in Cloudflare D1 while curriculum content remains in Git and free-form drafts remain local to the learner's browser by default.
+
+  style: modular-monolith
+
+  layers:
+    - name: presentation
+      paths:
+        - apps/web/src/App.tsx
+        - apps/web/src/pages
+        - apps/web/src/components
+        - apps/web/src/hooks
+        - apps/web/src/styles
+    - name: http
+      paths:
+        - apps/api/src/app.ts
+        - apps/api/src/worker.ts
+        - apps/api/src/lib/http.ts
+        - apps/web/src/lib/api.ts
+    - name: business
+      paths:
+        - packages/domain/src
+        - packages/content/src
+        - apps/web/src/data
+    - name: infrastructure
+      paths:
+        - apps/api/src/repository
+        - apps/api/src/lib/security.ts
+        - apps/api/src/lib/rate-limit.ts
+        - infra/migrations
+        - infra/wrangler.jsonc
+
+  boundaries:
+    - The React application accesses persisted learner state only through apps/web/src/lib/api.ts and the useLearner state boundary.
+    - Static curriculum and selectors live in packages/content; personal state belongs to the API and D1.
+    - packages/domain stays framework-free and must not import React, Hono, Cloudflare bindings, or D1.
+    - apps/api/src/repository/repository.ts defines persistence behavior; D1Repository is production storage and MemoryRepository is a test double.
+    - Worker API mutations require anonymous-session authentication and a trusted same-origin request.
+    - Written drafts remain browser-local by default; additions that synchronize artifacts must define consent, retention, and deletion behavior.
+
+  integrations:
+    - Cloudflare Workers static assets and same-origin Hono API
+    - Cloudflare D1 SQLite database via DB binding
+    - Anonymous HttpOnly session cookie named ia_session
+    - Browser localStorage for learner snapshots and draft text in the current release
+    - GitHub Actions quality workflow
+
+  auth:
+    userFacingPattern: Anonymous opaque session token in HttpOnly Secure SameSite=Lax cookie; only SHA-256 token digest is stored in D1.
+    partnerPattern: No partner authentication or external API integration in the current release.
+    configPaths:
+      - apps/api/src/lib/security.ts
+      - apps/api/src/app.ts
+      - infra/wrangler.jsonc
+
+  errorHandling:
+    businessException: Hono JSON error responses with Zod validation failures, explicit HTTP status codes, and sanitized app.onError handling.
+    codes:
+      - validation_error
+      - unauthenticated
+      - forbidden_origin
+      - attempt_not_found
+      - attempt_already_finished
+      - rate_limited
+
+  diagrams:
+    existing:
+      - docs/architecture.md
+    preferredFormat: mermaid
+
+  repositoryRelationships:
+    - primary: kritikamodi-17/interview-architect
+      consumes:
+        - Cloudflare Workers
+        - Cloudflare D1
+        - GitHub Actions
+```

@@ -1,0 +1,95 @@
+---
+description: TypeScript, testing, review, and entropy standards for Interview Architect.
+globs:
+alwaysApply: true
+---
+
+# coding-standards.mdc — Interview Architect
+
+```yaml
+codingStandards:
+  languages:
+    TypeScript:
+      version: "^5.8.3"
+      rules:
+        - Use strict TypeScript with noUncheckedIndexedAccess, isolatedModules, and verbatimModuleSyntax.
+        - Use type-only imports when importing only types.
+        - Preserve explicit interfaces at shared API and repository boundaries.
+    SQL:
+      rules:
+        - Add forward-only, append-only D1 migrations under infra/migrations.
+        - Use parameterized statements through the repository layer.
+    CSS:
+      rules:
+        - Extend existing visual tokens and responsive breakpoints before adding isolated styles.
+        - Keep keyboard focus, contrast, responsive behavior, and reduced-motion preferences intentional.
+
+  frameworks:
+    React:
+      rules:
+        - Use function components and hooks.
+        - Keep route-level code lazy-loaded and split large feature pages into focused components/hooks when adding substantial behavior.
+        - Preserve the URL as the source of truth for question-bank filter state.
+    Hono:
+      rules:
+        - Validate request bodies and parameters with Zod strict schemas.
+        - Keep HTTP orchestration in app.ts and persistence in the repository interface.
+    CloudflareWorkers:
+      rules:
+        - Keep Worker bindings typed and same-origin API paths compatible with static asset deployment.
+
+  testing:
+    framework: Vitest and Playwright
+    runner: npm workspaces; vitest run for package/API tests and playwright test for browser journeys
+    location: apps/api/test, packages/content/test, packages/domain/test, tests/e2e
+    requirements:
+      - New domain and repository behavior requires focused Vitest coverage.
+      - New API behavior requires Hono/API integration coverage, including auth and malformed-input cases when relevant.
+      - New learner workflows require Playwright end-to-end coverage of their success path and critical failure/retry path.
+      - Run content validation when content schema or records change.
+      - Preserve privacy-deletion, anonymous-session, and origin-check tests for changes touching learner state.
+    coverage:
+      tool: Vitest coverage is not configured; CI enforces scenario coverage through test suites.
+      threshold: null
+
+  naming:
+    commits: conventional
+    packages: match existing workspace layout and @interview-architect namespace
+
+  review:
+    blockingSeverities: [BLOCKER]
+    strictReview: false
+    dimensions:
+      - product correctness
+      - architecture
+      - privacy and security
+      - accessibility
+      - performance
+      - reliability
+      - maintainability
+      - entropy
+    securityChecks:
+      - no secrets in code or config commits
+      - validate API input and use parameterized D1 statements
+      - protect write routes with existing trusted-origin rules
+      - do not render untrusted raw HTML or unsanitized diagram markup
+      - do not edit .cursor kit files outside project-context
+
+  entropy:
+    enabled: true
+    policy: remove-on-touch
+    onChange:
+      - remove unused symbols and commented-out code
+      - delete superseded components, hooks, tests, and storage keys when replacing behavior
+      - remove orphaned config and stale documentation statements in touched areas
+    blockReview:
+      - new commented-out code without tracked reason
+      - parallel superseded implementation left in diff
+      - duplicated persistence behavior outside the repository boundary
+    reference: .cursor/sdlc-system/workflow/entropy-management.md
+
+  documentation:
+    sdlcArtifacts: docs/sdlc/{workflowId}/
+    projectGuide: README.md
+    stackRules: []
+```

@@ -78,11 +78,15 @@ export interface InterviewQuestion {
 
 export type AttemptStatus = "in_progress" | "completed" | "abandoned";
 
+/** The learner-selected level of guidance for a practice session. */
+export type PracticeMode = "learn" | "mock";
+
 export interface PracticeAttempt {
   id: string;
   userId: string;
   questionId: string;
   questionVersion: number;
+  mode: PracticeMode;
   status: AttemptStatus;
   startedAt: string;
   completedAt?: string;

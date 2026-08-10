@@ -78,6 +78,49 @@ const questions: InterviewQuestion[] = [
     commonPitfalls: ["Assuming consumers exceed partitions."],
     references: [],
     reviewedAt: "2026-08-01T00:00:00.000Z"
+  },
+  {
+    id: "redis-invalidation",
+    slug: "redis-invalidation",
+    version: 1,
+    status: "published",
+    moduleId: "caching-redis",
+    primaryTopicId: "redis-caching",
+    title: "Invalidate a product cache safely",
+    type: "design",
+    difficulty: "intermediate",
+    estimatedMinutes: 30,
+    tags: ["redis", "cache", "reliability"],
+    prerequisites: [],
+    prompt: {
+      question: "How would you invalidate a product cache safely?",
+      followUps: ["What if invalidation is delayed?"]
+    },
+    hints: ["Start with the write path."],
+    answer: {
+      summary: "Treat invalidation as part of the write contract.",
+      sections: [{ heading: "Flow", markdown: "Write the source of truth before invalidating dependent cache keys." }],
+      tradeoffs: ["Synchronous invalidation increases write latency."],
+      failureModes: ["A delayed invalidation can serve stale data."],
+      keyTerms: ["cache invalidation"]
+    },
+    rubric: [
+      {
+        dimension: "write path",
+        weight: 1,
+        mustMention: ["source of truth"],
+        scoreGuide: { 0: "Missing", 1: "Basic", 2: "Partial", 3: "Strong", 4: "Excellent" }
+      },
+      {
+        dimension: "failure recovery",
+        weight: 1,
+        mustMention: ["retry"],
+        scoreGuide: { 0: "Missing", 1: "Basic", 2: "Partial", 3: "Strong", 4: "Excellent" }
+      }
+    ],
+    commonPitfalls: ["Deleting keys before a write succeeds."],
+    references: [],
+    reviewedAt: "2026-08-01T00:00:00.000Z"
   }
 ];
 
@@ -98,6 +141,9 @@ function makeTestApp(options: { sessionTtlSeconds?: number; sessionCreationRateL
     repository,
     advanceDays(days: number) {
       current = new Date(current.getTime() + days * 24 * 60 * 60 * 1_000);
+    },
+    advanceSeconds(seconds: number) {
+      current = new Date(current.getTime() + seconds * 1_000);
     }
   };
 }
@@ -164,6 +210,69 @@ describe("Interview Architect API", () => {
     await expect(crossOrigin.json()).resolves.toMatchObject({ error: { code: "untrusted_origin" } });
   });
 
+  it("requires an origin for attempt mutations and isolates anonymous learners", async () => {
+    const { app } = makeTestApp();
+    const ownerCookie = await createSession(app);
+    const started = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(ownerCookie),
+      body: JSON.stringify({ questionId: "redis-cache-aside" })
+    });
+    const { attempt } = (await started.json()) as { attempt: { id: string } };
+    const completionBody = JSON.stringify({
+      status: "completed",
+      durationSeconds: 120,
+      selfScore: 3,
+      rubricScores: { "read flow": 3 }
+    });
+
+    const missingOrigin = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { Cookie: ownerCookie, "content-type": "application/json", "Idempotency-Key": "00000000-0000-4000-8000-000000000091" },
+      body: completionBody
+    });
+    expect(missingOrigin.status).toBe(403);
+
+    const hostileOrigin = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(ownerCookie, "https://evil.example"), "Idempotency-Key": "00000000-0000-4000-8000-000000000092" },
+      body: completionBody
+    });
+    expect(hostileOrigin.status).toBe(403);
+
+    const otherCookie = await createSession(app);
+    const foreignAttempt = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(otherCookie), "Idempotency-Key": "00000000-0000-4000-8000-000000000093" },
+      body: completionBody
+    });
+    expect(foreignAttempt.status).toBe(404);
+
+    const ownerProgress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: ownerCookie } });
+    await expect(ownerProgress.json()).resolves.toMatchObject({
+      attempts: [expect.objectContaining({ id: attempt.id, status: "in_progress" })]
+    });
+  });
+
+  it("accepts only the configured production application origin", async () => {
+    const { app } = makeTestApp();
+    const bindings = { ALLOWED_ORIGIN: "https://studio.example", ENVIRONMENT: "production" };
+
+    const accepted = await app.request("https://api.example/api/v1/session/anonymous", {
+      method: "POST",
+      headers: mutationHeaders(undefined, "https://studio.example"),
+      body: "{}"
+    }, bindings);
+    expect(accepted.status).toBe(201);
+
+    const rejected = await app.request("https://api.example/api/v1/session/anonymous", {
+      method: "POST",
+      headers: mutationHeaders(undefined, "https://other.example"),
+      body: "{}"
+    }, bindings);
+    expect(rejected.status).toBe(403);
+  });
+
   it("cleans expired anonymous sessions and their learner state when authenticating", async () => {
     const { app, repository, advanceDays } = makeTestApp();
     const cookie = await createSession(app);
@@ -212,6 +321,7 @@ describe("Interview Architect API", () => {
     }>;
     expect(payloads[0]?.attempt.id).toBe(payloads[1]?.attempt.id);
     expect(payloads[0]?.attempt.status).toBe("in_progress");
+    expect(payloads[0]?.attempt).toMatchObject({ mode: "learn" });
     await expect(repository.listAttempts("id-2")).resolves.toEqual([
       expect.objectContaining({ id: payloads[0]?.attempt.id, questionId: "redis-cache-aside" })
     ]);
@@ -229,6 +339,247 @@ describe("Interview Architect API", () => {
     const restarted = await start();
     expect(restarted.status).toBe(201);
     await expect(repository.listAttempts("id-2")).resolves.toHaveLength(2);
+  });
+
+  it("validates practice mode and preserves the original mode for an active retry", async () => {
+    const { app } = makeTestApp();
+    const cookie = await createSession(app);
+
+    const invalid = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "kafka-consumer-groups", mode: "coached" })
+    });
+    expect(invalid.status).toBe(422);
+
+    const first = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "kafka-consumer-groups", questionVersion: 2, mode: "mock" })
+    });
+    expect(first.status).toBe(201);
+    const firstPayload = (await first.json()) as { attempt: { id: string; mode: string } };
+    expect(firstPayload.attempt.mode).toBe("mock");
+
+    const retry = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "kafka-consumer-groups", questionVersion: 2, mode: "learn" })
+    });
+    expect(retry.status).toBe(200);
+    await expect(retry.json()).resolves.toMatchObject({ attempt: { id: firstPayload.attempt.id, mode: "mock" } });
+  });
+
+  it("requires an idempotency key and safely replays a normalized completed attempt", async () => {
+    const { app } = makeTestApp();
+    const cookie = await createSession(app);
+    const started = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "redis-invalidation", mode: "mock" })
+    });
+    const { attempt } = (await started.json()) as { attempt: { id: string } };
+    const completionBody = JSON.stringify({
+      status: "completed",
+      durationSeconds: 1_200,
+      selfScore: 3,
+      rubricScores: { "write path": 3, "failure recovery": 4 }
+    });
+
+    const missingKey = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: mutationHeaders(cookie),
+      body: completionBody
+    });
+    expect(missingKey.status).toBe(400);
+    await expect(missingKey.json()).resolves.toMatchObject({ error: { code: "idempotency_key_required" } });
+
+    const operationKey = "00000000-0000-4000-8000-000000000001";
+    const headers = { ...mutationHeaders(cookie), "Idempotency-Key": operationKey };
+    const completed = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers,
+      body: completionBody
+    });
+    expect(completed.status).toBe(200);
+    const completionPayload = await completed.json();
+
+    const replay = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        rubricScores: { "failure recovery": 4, "write path": 3 },
+        selfScore: 3,
+        durationSeconds: 1_200,
+        status: "completed"
+      })
+    });
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    await expect(replay.json()).resolves.toEqual(completionPayload);
+
+    const conflict = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        status: "completed",
+        durationSeconds: 1_200,
+        selfScore: 4,
+        rubricScores: { "write path": 4, "failure recovery": 4 }
+      })
+    });
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({ error: { code: "idempotency_key_reused" } });
+
+    const progress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: cookie } });
+    await expect(progress.json()).resolves.toMatchObject({
+      summary: { completedAttempts: 1, topicsPracticed: 1 },
+      mastery: [{ topicId: "redis-caching", attemptsCount: 1 }]
+    });
+  });
+
+  it("does not recreate a receipt after it expires and the session is renewed", async () => {
+    const { app, advanceSeconds } = makeTestApp({ sessionTtlSeconds: 60 });
+    const cookie = await createSession(app);
+    const started = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "redis-cache-aside" })
+    });
+    const { attempt } = (await started.json()) as { attempt: { id: string } };
+    const operationKey = "00000000-0000-4000-8000-000000000061";
+    const completionBody = JSON.stringify({
+      status: "completed",
+      durationSeconds: 60,
+      selfScore: 3,
+      rubricScores: { "read flow": 3 }
+    });
+    const completed = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(cookie), "Idempotency-Key": operationKey },
+      body: completionBody
+    });
+    expect(completed.status).toBe(200);
+
+    // Keep the anonymous session alive while allowing its short-lived replay
+    // receipt to expire, matching a real tab that renews its session.
+    advanceSeconds(30);
+    const renewed = await app.request("http://localhost/api/v1/session/anonymous", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: "{}"
+    });
+    expect(renewed.status).toBe(200);
+    advanceSeconds(31);
+
+    const expiredReplay = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(cookie), "Idempotency-Key": operationKey },
+      body: completionBody
+    });
+    expect(expiredReplay.status).toBe(409);
+    await expect(expiredReplay.json()).resolves.toMatchObject({ error: { code: "attempt_already_finished" } });
+
+    const progress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: cookie } });
+    await expect(progress.json()).resolves.toMatchObject({
+      summary: { completedAttempts: 1 },
+      mastery: [{ topicId: "redis-caching", attemptsCount: 1 }]
+    });
+  });
+
+  it("requires an exact rubric score set before completing an attempt", async () => {
+    const { app } = makeTestApp();
+    const cookie = await createSession(app);
+    const started = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "redis-cache-aside" })
+    });
+    const { attempt } = (await started.json()) as { attempt: { id: string } };
+    const headers = { ...mutationHeaders(cookie), "Idempotency-Key": "00000000-0000-4000-8000-000000000011" };
+
+    const absent = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ status: "completed", selfScore: 3 })
+    });
+    expect(absent.status).toBe(422);
+
+    const incomplete = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...headers, "Idempotency-Key": "00000000-0000-4000-8000-000000000012" },
+      body: JSON.stringify({ status: "completed", selfScore: 3, rubricScores: {} })
+    });
+    expect(incomplete.status).toBe(422);
+    await expect(incomplete.json()).resolves.toMatchObject({ error: { code: "validation_error", details: { missingDimension: "read flow" } } });
+
+    const extra = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...headers, "Idempotency-Key": "00000000-0000-4000-8000-000000000013" },
+      body: JSON.stringify({ status: "completed", selfScore: 3, rubricScores: { "not a rubric": 3 } })
+    });
+    expect(extra.status).toBe(422);
+
+    const multiRubricStart = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "redis-invalidation" })
+    });
+    const { attempt: multiRubricAttempt } = (await multiRubricStart.json()) as { attempt: { id: string } };
+    const partial = await app.request(`http://localhost/api/v1/attempts/${multiRubricAttempt.id}`, {
+      method: "PATCH",
+      headers: { ...headers, "Idempotency-Key": "00000000-0000-4000-8000-000000000014" },
+      body: JSON.stringify({ status: "completed", selfScore: 3, rubricScores: { "write path": 3 } })
+    });
+    expect(partial.status).toBe(422);
+    await expect(partial.json()).resolves.toMatchObject({ error: { details: { missingDimension: "failure recovery" } } });
+
+    const progress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: cookie } });
+    const progressPayload = (await progress.json()) as { attempts: Array<{ id: string; status: string }> };
+    expect(progressPayload.attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: attempt.id, status: "in_progress" }),
+      expect.objectContaining({ id: multiRubricAttempt.id, status: "in_progress" })
+    ]));
+  });
+
+  it("keeps same-topic mastery aggregate correct for concurrent completions", async () => {
+    const { app } = makeTestApp();
+    const cookie = await createSession(app);
+    const firstStart = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "redis-cache-aside" })
+    });
+    const secondStart = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "redis-invalidation" })
+    });
+    const [{ attempt: first }, { attempt: second }] = await Promise.all([
+      firstStart.json() as Promise<{ attempt: { id: string } }>,
+      secondStart.json() as Promise<{ attempt: { id: string } }>
+    ]);
+
+    const complete = (attemptId: string, operationKey: string, rubricScores: Record<string, number>) => app.request(
+      `http://localhost/api/v1/attempts/${attemptId}`,
+      {
+        method: "PATCH",
+        headers: { ...mutationHeaders(cookie), "Idempotency-Key": operationKey },
+        body: JSON.stringify({ status: "completed", durationSeconds: 60, selfScore: 3, rubricScores })
+      }
+    );
+    const [firstCompletion, secondCompletion] = await Promise.all([
+      complete(first.id, "00000000-0000-4000-8000-000000000021", { "read flow": 3 }),
+      complete(second.id, "00000000-0000-4000-8000-000000000022", { "write path": 3, "failure recovery": 3 })
+    ]);
+    expect(firstCompletion.status).toBe(200);
+    expect(secondCompletion.status).toBe(200);
+
+    const progress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: cookie } });
+    await expect(progress.json()).resolves.toMatchObject({
+      mastery: [{ topicId: "redis-caching", attemptsCount: 2 }],
+      summary: { completedAttempts: 2, topicsPracticed: 1 }
+    });
   });
 
   it("deletes anonymous learner data and clears the local session on request", async () => {
@@ -329,7 +680,7 @@ describe("Interview Architect API", () => {
 
     const completed = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
       method: "PATCH",
-      headers: mutationHeaders(cookie),
+      headers: { ...mutationHeaders(cookie), "Idempotency-Key": "00000000-0000-4000-8000-000000000002" },
       body: JSON.stringify({
         status: "completed",
         durationSeconds: 1440,
@@ -373,7 +724,7 @@ describe("Interview Architect API", () => {
     });
     expect(reviewQueue.status).toBe(200);
     await expect(reviewQueue.json()).resolves.toMatchObject({
-      items: [{ question: { id: "redis-cache-aside" }, mastery: { topicId: "redis-caching" } }]
+      items: [{ question: { id: "redis-invalidation" }, mastery: { topicId: "redis-caching" } }]
     });
   });
 });
