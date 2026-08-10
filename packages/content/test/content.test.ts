@@ -57,6 +57,20 @@ describe("Interview Architect curriculum", () => {
     expect(issues.some((issue) => issue.message.includes("approved source list"))).toBe(true);
   });
 
+  it("requires unique rubric dimension labels for exact client score sets", () => {
+    const invalid = JSON.parse(JSON.stringify(curriculum)) as typeof curriculum;
+    const firstQuestion = invalid.questions[0];
+    const firstDimension = firstQuestion?.rubric[0];
+    const secondDimension = firstQuestion?.rubric[1];
+    if (!firstDimension || !secondDimension) {
+      throw new Error("Fixture unexpectedly lacks a multi-dimension rubric.");
+    }
+    secondDimension.dimension = firstDimension.dimension;
+
+    const issues = validateCurriculum(invalid);
+    expect(issues.some((issue) => issue.message.includes("Rubric dimension labels must be unique"))).toBe(true);
+  });
+
   it("requires at least one published question for every visible module", () => {
     const withoutSecurity = {
       ...curriculum,

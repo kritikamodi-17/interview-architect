@@ -150,6 +150,15 @@ export const questionSchema = z
       });
     }
 
+    const rubricDimensions = question.rubric.map((dimension) => dimension.dimension);
+    if (new Set(rubricDimensions).size !== rubricDimensions.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["rubric"],
+        message: "Rubric dimension labels must be unique."
+      });
+    }
+
     if (new Set(question.tags).size !== question.tags.length) {
       context.addIssue({
         code: "custom",

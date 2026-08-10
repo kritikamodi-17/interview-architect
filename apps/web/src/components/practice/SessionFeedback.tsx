@@ -19,23 +19,25 @@ function RubricScore({
   index,
   score,
   showGuide,
+  readOnly = false,
   onChange
 }: {
   dimension: RubricDimension;
   index: number;
   score?: number;
   showGuide: boolean;
+  readOnly?: boolean;
   onChange: (score: number) => void;
 }): React.JSX.Element {
   const key = dimension.dimension;
   return (
-    <fieldset className="rubric-score">
+    <fieldset className={`rubric-score${readOnly ? " rubric-score--read-only" : ""}`}>
       <legend><span>0{index + 1}</span>{dimension.dimension}<small>{dimension.weight}% of the signal</small></legend>
       {showGuide ? <div className="rubric-score__prompt">Must mention: {dimension.mustMention.join(" · ")}</div> : <p className="rubric-score__mock-note">Use your own evidence first; score guidance unlocks after submission.</p>}
       <div className="score-options" role="radiogroup" aria-label={`Score for ${dimension.dimension}`}>
         {[0, 1, 2, 3, 4].map((value) => (
           <label className={score === value ? "is-selected" : ""} key={value}>
-            <input type="radio" name={key} value={value} checked={score === value} onChange={() => onChange(value)} />
+            <input type="radio" name={key} value={value} checked={score === value} disabled={readOnly} onChange={() => onChange(value)} />
             <span>{value}</span>
             {showGuide ? <small>{dimension.scoreGuide[value as 0 | 1 | 2 | 3 | 4]}</small> : <small className="sr-only">Score {value} out of 4</small>}
           </label>
@@ -124,7 +126,7 @@ export function SessionFeedback({
           <div className="self-score-panel"><div><p className="eyebrow">Overall reflection</p><h3>How would you rate this attempt?</h3><p>Keep it honest; this fuels your personal review queue.</p></div><div className="self-score-buttons" role="radiogroup" aria-label="Overall self-score">{[0, 1, 2, 3, 4].map((score) => <label key={score} className={selfScore === score ? "is-selected" : ""}><input type="radio" name="self-score" value={score} checked={selfScore === score} onChange={() => onSelfScoreChange(score)} /><strong>{score}</strong><span>{["Missed it", "Fragile", "Developing", "Strong", "Interview ready"][score]}</span></label>)}</div></div>
           <p className={`rubric-completion-status${canComplete ? " is-ready" : ""}`} id="rubric-completion-status" role="status">{completionMessage}</p>
           <button className="button button--primary button--wide" type="button" disabled={!canComplete} aria-describedby="rubric-completion-status" onClick={onComplete}>{isCompleting ? "Saving your review…" : "Complete session & update progress"}<Icon name="arrow-right" size={16} /></button>
-        </> : <div className="review-saved" role="status"><span><Icon name="check" size={18} /></span><div><strong>{isAwaitingRetry ? "Review saved locally—sync still needs a retry." : "Review saved—nice work."}</strong><p>{isAwaitingRetry ? "The same completion request will be replayed safely when you retry." : "Your score will shape future review reminders. Your answer notes remain private on this device."}</p>{isAwaitingRetry ? <button className="button button--secondary button--small" type="button" onClick={onRetryCompletion}>Retry completion sync</button> : null}</div></div>}
+        </> : <><div className="rubric-list rubric-list--completed">{question.rubric.map((dimension, index) => <RubricScore dimension={dimension} index={index} key={dimension.dimension} score={rubricScores[dimension.dimension]} showGuide={showGuidance} readOnly onChange={() => undefined} />)}</div><div className="review-saved" role="status"><span><Icon name="check" size={18} /></span><div><strong>{isAwaitingRetry ? "Review saved locally—sync still needs a retry." : "Review saved—nice work."}</strong><p>{isAwaitingRetry ? "The same completion request will be replayed safely when you retry." : "Your score will shape future review reminders. Your answer notes remain private on this device."}</p>{isAwaitingRetry ? <button className="button button--secondary button--small" type="button" onClick={onRetryCompletion}>Retry completion sync</button> : null}</div></div></>}
       </section> : null}
 
       {isCompleted && feedback ? <section className="studio-feedback-summary" aria-labelledby="feedback-title"><header><div><p className="eyebrow">Evidence-based feedback</p><h2 id="feedback-title">Your next improvement is visible now</h2></div><span>{feedback.average.toFixed(1)} / 4</span></header><div className="studio-feedback-summary__grid"><section><h3><Icon name="check" size={16} />Strengths</h3><ul>{feedback.strengths.map((strength) => <li key={strength}>{strength}</li>)}</ul></section><section><h3><Icon name="target" size={16} />Gaps to close</h3><ul>{feedback.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul></section></div><p className="studio-feedback-summary__next"><Icon name="arrow-right" size={16} /><span><strong>Next action</strong>{feedback.nextAction}</span></p></section> : null}

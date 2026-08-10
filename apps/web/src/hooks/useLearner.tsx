@@ -172,6 +172,7 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
   const [snapshot, setSnapshot] = useState<LearnerSnapshot>(readSnapshot);
   const snapshotRef = useRef(snapshot);
   const startInFlightRef = useRef(new Map<string, Promise<PracticeAttempt>>());
+  const refreshInFlightRef = useRef<Promise<void> | undefined>(undefined);
   const completionOperationsRef = useRef(new Map<string, string>());
   const snapshotEpochRef = useRef(0);
   const skipNextSnapshotPersistRef = useRef(false);
@@ -218,6 +219,7 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
     // or browser storage.
     snapshotEpochRef.current += 1;
     startInFlightRef.current.clear();
+    refreshInFlightRef.current = undefined;
     completionOperationsRef.current.clear();
     skipNextSnapshotPersistRef.current = true;
     const storageClear = clearInterviewArchitectStorage();
@@ -228,19 +230,32 @@ export function LearnerProvider({ children }: PropsWithChildren): React.JSX.Elem
     return storageClear;
   }, []);
 
-  const refreshProgress = useCallback(async () => {
-    const requestEpoch = snapshotEpochRef.current;
-    try {
-      await api.createAnonymousSession();
-      if (requestEpoch !== snapshotEpochRef.current) return;
-      const remote = await api.getProgress();
-      if (requestEpoch !== snapshotEpochRef.current) return;
-      updateSnapshot((current) => mergeProgress(current, remote), requestEpoch);
-      markOnline();
-    } catch (error) {
-      if (requestEpoch !== snapshotEpochRef.current) return;
-      markSaveFailure(error, "You are offline. Your local study data remains on this device.");
-    }
+  const refreshProgress = useCallback((): Promise<void> => {
+    // React Strict Mode can mount the provider twice in development. Share the
+    // bootstrap request so one browser does not mint duplicate anonymous
+    // sessions or race two progress hydrations.
+    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+
+    const request = (async () => {
+      const requestEpoch = snapshotEpochRef.current;
+      try {
+        await api.createAnonymousSession();
+        if (requestEpoch !== snapshotEpochRef.current) return;
+        const remote = await api.getProgress();
+        if (requestEpoch !== snapshotEpochRef.current) return;
+        updateSnapshot((current) => mergeProgress(current, remote), requestEpoch);
+        markOnline();
+      } catch (error) {
+        if (requestEpoch !== snapshotEpochRef.current) return;
+        markSaveFailure(error, "You are offline. Your local study data remains on this device.");
+      }
+    })();
+
+    refreshInFlightRef.current = request;
+    void request.then(() => {
+      if (refreshInFlightRef.current === request) refreshInFlightRef.current = undefined;
+    });
+    return request;
   }, [markOnline, markSaveFailure, updateSnapshot]);
 
   useEffect(() => {

@@ -7,7 +7,7 @@ import type { PracticeMode } from "@interview-architect/domain";
  */
 export const STUDY_STORAGE_PREFIX = "interview-architect:";
 export const LEARNER_SNAPSHOT_KEY = `${STUDY_STORAGE_PREFIX}learner:v1`;
-export const LEGACY_DRAFT_PREFIX = `${STUDY_STORAGE_PREFIX}draft:`;
+const LEGACY_DRAFT_PREFIX = `${STUDY_STORAGE_PREFIX}draft:`;
 const STUDIO_STORAGE_PREFIX = `${STUDY_STORAGE_PREFIX}studio:v1:`;
 
 export const WORKSPACE_SECTION_IDS = [

@@ -141,6 +141,9 @@ function makeTestApp(options: { sessionTtlSeconds?: number; sessionCreationRateL
     repository,
     advanceDays(days: number) {
       current = new Date(current.getTime() + days * 24 * 60 * 60 * 1_000);
+    },
+    advanceSeconds(seconds: number) {
+      current = new Date(current.getTime() + seconds * 1_000);
     }
   };
 }
@@ -205,6 +208,69 @@ describe("Interview Architect API", () => {
     });
     expect(crossOrigin.status).toBe(403);
     await expect(crossOrigin.json()).resolves.toMatchObject({ error: { code: "untrusted_origin" } });
+  });
+
+  it("requires an origin for attempt mutations and isolates anonymous learners", async () => {
+    const { app } = makeTestApp();
+    const ownerCookie = await createSession(app);
+    const started = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(ownerCookie),
+      body: JSON.stringify({ questionId: "redis-cache-aside" })
+    });
+    const { attempt } = (await started.json()) as { attempt: { id: string } };
+    const completionBody = JSON.stringify({
+      status: "completed",
+      durationSeconds: 120,
+      selfScore: 3,
+      rubricScores: { "read flow": 3 }
+    });
+
+    const missingOrigin = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { Cookie: ownerCookie, "content-type": "application/json", "Idempotency-Key": "00000000-0000-4000-8000-000000000091" },
+      body: completionBody
+    });
+    expect(missingOrigin.status).toBe(403);
+
+    const hostileOrigin = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(ownerCookie, "https://evil.example"), "Idempotency-Key": "00000000-0000-4000-8000-000000000092" },
+      body: completionBody
+    });
+    expect(hostileOrigin.status).toBe(403);
+
+    const otherCookie = await createSession(app);
+    const foreignAttempt = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(otherCookie), "Idempotency-Key": "00000000-0000-4000-8000-000000000093" },
+      body: completionBody
+    });
+    expect(foreignAttempt.status).toBe(404);
+
+    const ownerProgress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: ownerCookie } });
+    await expect(ownerProgress.json()).resolves.toMatchObject({
+      attempts: [expect.objectContaining({ id: attempt.id, status: "in_progress" })]
+    });
+  });
+
+  it("accepts only the configured production application origin", async () => {
+    const { app } = makeTestApp();
+    const bindings = { ALLOWED_ORIGIN: "https://studio.example", ENVIRONMENT: "production" };
+
+    const accepted = await app.request("https://api.example/api/v1/session/anonymous", {
+      method: "POST",
+      headers: mutationHeaders(undefined, "https://studio.example"),
+      body: "{}"
+    }, bindings);
+    expect(accepted.status).toBe(201);
+
+    const rejected = await app.request("https://api.example/api/v1/session/anonymous", {
+      method: "POST",
+      headers: mutationHeaders(undefined, "https://other.example"),
+      body: "{}"
+    }, bindings);
+    expect(rejected.status).toBe(403);
   });
 
   it("cleans expired anonymous sessions and their learner state when authenticating", async () => {
@@ -304,20 +370,20 @@ describe("Interview Architect API", () => {
     await expect(retry.json()).resolves.toMatchObject({ attempt: { id: firstPayload.attempt.id, mode: "mock" } });
   });
 
-  it("requires an idempotency key and safely replays a completed attempt", async () => {
+  it("requires an idempotency key and safely replays a normalized completed attempt", async () => {
     const { app } = makeTestApp();
     const cookie = await createSession(app);
     const started = await app.request("http://localhost/api/v1/attempts", {
       method: "POST",
       headers: mutationHeaders(cookie),
-      body: JSON.stringify({ questionId: "redis-cache-aside", mode: "mock" })
+      body: JSON.stringify({ questionId: "redis-invalidation", mode: "mock" })
     });
     const { attempt } = (await started.json()) as { attempt: { id: string } };
     const completionBody = JSON.stringify({
       status: "completed",
       durationSeconds: 1_200,
       selfScore: 3,
-      rubricScores: { "read flow": 3 }
+      rubricScores: { "write path": 3, "failure recovery": 4 }
     });
 
     const missingKey = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
@@ -341,7 +407,12 @@ describe("Interview Architect API", () => {
     const replay = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
       method: "PATCH",
       headers,
-      body: completionBody
+      body: JSON.stringify({
+        rubricScores: { "failure recovery": 4, "write path": 3 },
+        selfScore: 3,
+        durationSeconds: 1_200,
+        status: "completed"
+      })
     });
     expect(replay.status).toBe(200);
     expect(replay.headers.get("idempotency-replayed")).toBe("true");
@@ -354,7 +425,7 @@ describe("Interview Architect API", () => {
         status: "completed",
         durationSeconds: 1_200,
         selfScore: 4,
-        rubricScores: { "read flow": 4 }
+        rubricScores: { "write path": 4, "failure recovery": 4 }
       })
     });
     expect(conflict.status).toBe(409);
@@ -363,6 +434,55 @@ describe("Interview Architect API", () => {
     const progress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: cookie } });
     await expect(progress.json()).resolves.toMatchObject({
       summary: { completedAttempts: 1, topicsPracticed: 1 },
+      mastery: [{ topicId: "redis-caching", attemptsCount: 1 }]
+    });
+  });
+
+  it("does not recreate a receipt after it expires and the session is renewed", async () => {
+    const { app, advanceSeconds } = makeTestApp({ sessionTtlSeconds: 60 });
+    const cookie = await createSession(app);
+    const started = await app.request("http://localhost/api/v1/attempts", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: JSON.stringify({ questionId: "redis-cache-aside" })
+    });
+    const { attempt } = (await started.json()) as { attempt: { id: string } };
+    const operationKey = "00000000-0000-4000-8000-000000000061";
+    const completionBody = JSON.stringify({
+      status: "completed",
+      durationSeconds: 60,
+      selfScore: 3,
+      rubricScores: { "read flow": 3 }
+    });
+    const completed = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(cookie), "Idempotency-Key": operationKey },
+      body: completionBody
+    });
+    expect(completed.status).toBe(200);
+
+    // Keep the anonymous session alive while allowing its short-lived replay
+    // receipt to expire, matching a real tab that renews its session.
+    advanceSeconds(30);
+    const renewed = await app.request("http://localhost/api/v1/session/anonymous", {
+      method: "POST",
+      headers: mutationHeaders(cookie),
+      body: "{}"
+    });
+    expect(renewed.status).toBe(200);
+    advanceSeconds(31);
+
+    const expiredReplay = await app.request(`http://localhost/api/v1/attempts/${attempt.id}`, {
+      method: "PATCH",
+      headers: { ...mutationHeaders(cookie), "Idempotency-Key": operationKey },
+      body: completionBody
+    });
+    expect(expiredReplay.status).toBe(409);
+    await expect(expiredReplay.json()).resolves.toMatchObject({ error: { code: "attempt_already_finished" } });
+
+    const progress = await app.request("http://localhost/api/v1/progress", { headers: { Cookie: cookie } });
+    await expect(progress.json()).resolves.toMatchObject({
+      summary: { completedAttempts: 1 },
       mastery: [{ topicId: "redis-caching", attemptsCount: 1 }]
     });
   });
